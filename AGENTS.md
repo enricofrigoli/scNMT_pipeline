@@ -6,35 +6,53 @@ Repository guide for agentic coding in this project.
 - Snakemake pipeline for scNMT processing.
 - Main workflow entrypoint: `Snakefile`.
 - Default pipeline config: `defaultconfig.yaml`.
-- User config edited by the TUI: `snakeconfig.yaml`.
-- TUI entrypoint: `tui.py`.
+- User config: `snakeconfig.yaml`; copyable template: `snakeconfig.example.yaml`.
 - Reference docs: `README.md`.
 
 ## Build / Lint / Test
 - Create the pipeline env: `conda env create -n snakemake -f envs/snakemake.yaml`.
 - Activate it before pipeline work: `conda activate snakemake`.
+- Require Snakemake >=9.19 for dynamically named batch modules.
 - Run the pipeline: `snakemake --cores 24 --sdm conda --keep-incomplete`.
 - Dry run the workflow: `snakemake -n`.
 - Run a smaller workflow slice: `snakemake --cores 1 --until <rule>`.
 - Validate a config-driven run without executing jobs: `snakemake -n --configfile snakeconfig.yaml`.
-- For the TUI, use the dedicated env if available: `conda activate tui`.
-- Launch the TUI: `python tui.py`.
-- Syntax-check the TUI: `python -m py_compile tui.py`.
 
 ## Single Test / Narrow Check
-- There is no formal unit-test suite in this repo.
+- Run regression tests with `python -m unittest discover -s tests -v`.
 - For a narrow workflow check, run one rule path with `snakemake --cores 1 --until <rule>`.
 - For config validation, prefer `snakemake -n` after editing `snakeconfig.yaml`.
-- For the TUI, run `python tui.py` and confirm it loads and writes a config.
 
 ## Config Expectations
 - `snakeconfig.yaml` is the editable config file.
 - It should follow the nested structure described in `README.md`.
-- Top-level keys used by the workflow are `dataset`, `outdir`, `reference`, `ilse_info`, and `pipeline`.
-- `reference` contains `genome`, `transcriptome` (optional for Salmon), and `genes`.
-- `ilse_info` stores `metadata` and `fastqdir` as space-separated strings in YAML.
-- All config paths must be absolute.
-- `metadata` and `fastqdir` paths must exist.
+- The primary configuration uses top-level `batches`, shared `reference`, optional `datadir`/`outdir`, and shared processing options.
+- Each `batches.<batch>` requires `modality` and may override `samples`, individual `reference` fields, `ilse_info`, and processing option strings.
+- Batch IDs allow only letters, digits, and underscores; do not introduce cross-batch merge groups.
+- Without `batches`, preserve legacy `dataset`, `modality`, `reference`, `ilse_info`, `samples`, and `pipeline` behavior and paths.
+- `reference.genes` is required for cDNA. `reference.genome` is required for gDNA and STAR index building; cDNA with a supplied STAR index can omit it. Use uncompressed references.
+- Optional `reference.star_index` is an absolute directory containing `Genome`, `SA`, `SAindex`, and `genomeParameters.txt`.
+- Optional `reference.biscuit_index` is an absolute file prefix with `.bis.amb`, `.bis.ann`, `.bis.pac`, `.dau.bwt`, `.dau.sa`, `.par.bwt`, and `.par.sa` files.
+- Supplied indexes skip builders and can be shared between batches; otherwise retain builders under each batch/modality result directory.
+- `datadir` and `outdir` default to `data/` and `results/` beside `Snakefile`.
+- Batch `modality` selects `cDNA`, `gDNA`, or `both` and is mandatory; only legacy configurations infer omitted modality from the pipeline selector.
+- Discover metadata tables in `data/<batch>/<modality>/` and reads under its `fastq/` folder; legacy configurations retain `data/<modality>/`.
+- Accept current facility metadata columns `SAMPLE_NAME`, `FASTQ_FILE`, and `READ`; retain support for legacy `Sample Name` and `Unique ID / Lane`.
+- Normalize metadata only in memory. Derive FASTQ IDs by stripping `_R1.fastq.gz` or `_R2.fastq.gz` and require `READ` to match the filename's mate (`1` or `2`).
+- Group resequencing by exact `SAMPLE_NAME` (or legacy `Sample Name`) within each batch and modality; mate rows for an ID represent one read pair.
+- Skip blank `SAMPLE_NAME` rows only for `Undetermined*` FASTQs; reject other rows with missing sample names.
+- Optional batch `ilse_info.cDNA` and `ilse_info.gDNA` sections override `metadata`, `fastqdir`, and `samples` independently.
+- Reject top-level `ilse_info` in batch mode to prevent accidental reuse of inputs across batches.
+- Metadata and FASTQ directory overrides accept whitespace-separated strings or YAML lists.
+- Legacy flat `ilse_info` inputs are valid only for a single modality.
+- All explicit config paths must be absolute and contain no whitespace.
+- Validate input paths for selected modalities only; both modalities must have data when `modality: both`.
+- Never match or intersect cells or FASTQ IDs across batches or modalities; outputs are independent under `results/<batch>/<modality>/`.
+- Final batch matrices are `<batch>.star_umite.h5ad` and `<batch>.biscuit_methscan.h5ad`; retain legacy output names when `batches` is absent.
+- Deduplicate repeated FASTQ IDs within a cell.
+- Configure Methscan through string fields `methscan_prepare_args`, `methscan_filter_args`, `methscan_smooth_args`, `methscan_scan_args`, and `methscan_matrix_args`.
+- Keep Methscan input/output paths and threads controlled by the workflow; preparation uses `--input-format biscuit_short` for BISCUIT BED input.
+- Legacy dataset names, sample names, and FASTQ IDs use only letters, digits, underscores, dots, and hyphens; batch IDs are stricter (letters, digits, underscores only). Sample names containing spaces remain unsupported.
 
 ## Code Style
 - Use 4-space indentation.
@@ -64,38 +82,28 @@ Repository guide for agentic coding in this project.
 ## Types / Data Handling
 - Treat config values as strings until validation proves otherwise.
 - Convert integers only after successful validation.
-- Represent multi-path YAML fields as whitespace-separated strings unless the workflow expects a list.
+- Represent multi-path YAML fields as whitespace-separated strings or lists of paths.
 - When loading config, handle missing sections defensively.
 - Preserve unknown top-level keys when editing a config unless you are intentionally removing them.
 
 ## Naming Conventions
 - Match existing pipeline terminology from the README and Snakefile.
-- Use `dataset`, `outdir`, `reference`, `ilse_info`, and `pipeline` consistently.
+- Use `batches`, `dataset`, `datadir`, `outdir`, `modality`, `reference`, `ilse_info`, `samples`, and `pipeline` consistently.
 - Use descriptive names such as `load_config`, `validate_config`, and `build_config`.
-- Name UI widgets after the config field they represent.
 
 ## Error Handling
 - Raise `ValueError` or a custom exception for invalid user input.
-- Surface validation errors to the user in the TUI instead of silently fixing them.
+- Surface configuration validation errors instead of silently fixing them.
 - Fail fast on missing mandatory config sections.
 - Check absolute paths and existence where the Snakefile does so.
 - Do not swallow file-write errors; report them clearly.
 
 ## Workflow Rules
-- Keep `Snakefile` semantics in mind when editing the TUI or config logic.
-- Validate `pipeline` against `star_umite` and `salmon`.
-- Require `reference.transcriptome` only for Salmon.
+- Keep `Snakefile` semantics in mind when editing config logic.
+- For selected cDNA, require `pipeline: star_umite`; gDNA always uses `biscuit_methscan`.
+- Require `reference.genes` only when cDNA is selected.
 - Keep `snakeconfig.yaml` overwriting intentional and explicit.
-- Cancel actions must never write to disk.
-
-## TUI Rules
-- Prefer a small schema-driven form over ad hoc widget creation.
-- Load `snakeconfig.yaml` at startup if it exists.
-- Prepopulate form fields from the loaded config.
-- Confirm must validate, write the file, and exit.
-- Cancel must exit without writing.
-- Use absolute-path validation for all path inputs.
-- Keep the form responsive and easy to extend.
+- Coordinate STAR shared-memory cleanup once per index after all alignments using it; do not make counting depend on cleanup. Appending a batch must not force previous batches to recount.
 
 ## Repository Notes
 - The repo currently has no `.cursor/rules/` files.
@@ -105,20 +113,18 @@ Repository guide for agentic coding in this project.
 
 ## Validation Checklist
 - Verify `snakeconfig.yaml` remains valid YAML after any edit.
-- Verify `dataset` is non-empty before writing the file.
-- Verify `outdir` and all reference paths are absolute.
-- Verify `ilse_info.metadata` and `ilse_info.fastqdir` contain space-separated absolute paths.
+- Validate batch IDs and required batch modalities, or verify `dataset` is non-empty for legacy configurations.
+- Verify explicit `datadir`, `outdir`, and reference paths are absolute.
+- Verify selected modality metadata and FASTQ directory overrides contain absolute paths.
 - Verify `pipeline` is one of the supported values before launching Snakemake.
 - Prefer `snakemake -n --configfile snakeconfig.yaml` after config edits.
-- Prefer `python -m py_compile tui.py` after TUI edits.
 
 ## Config Writing Rules
 - Load an existing `snakeconfig.yaml` and preserve unknown top-level keys when reasonable.
-- Write nested `reference` and `ilse_info` sections explicitly, not as flattened placeholders.
-- Keep multi-path values serialized as whitespace-separated strings in YAML.
-- Remove optional keys only when the UI intentionally clears them.
-- Keep confirm actions atomic: validate first, then write, then exit.
-- Keep cancel actions side-effect free.
+- Write nested `batches`, `reference`, and batch `ilse_info` sections explicitly, not as flattened placeholders.
+- Preserve supported multi-path values as whitespace-separated strings or YAML lists.
+- Remove optional keys only when intentionally clearing them.
+- Validate before writing configuration files.
 
 ## Agent Behavior
 - Make focused changes.

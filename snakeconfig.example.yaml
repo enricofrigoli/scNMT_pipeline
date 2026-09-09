@@ -1,0 +1,51 @@
+# Shared references for all batches. Use uncompressed genome and annotation files.
+reference:
+  genome: /absolute/path/to/genome.fa
+  genes: /absolute/path/to/annotation.gtf  # Required for cDNA.
+  # Reuse existing indexes. Omit these keys to build indexes within each batch.
+  star_index: /absolute/path/to/star_index  # Directory.
+  biscuit_index: /absolute/path/to/biscuit/genome  # File prefix, not a directory.
+
+# IDs name data/<batch>/ inputs and results/<batch>/ outputs.
+# Use only letters, digits, and underscores. Each batch requires modality.
+batches:
+  batch_01:
+    modality: both
+  batch_02:
+    modality: cDNA
+  batch_03:
+    modality: gDNA
+
+# Defaults are data/ and results/ beside Snakefile. Overrides must be absolute.
+# datadir: /absolute/path/to/data
+# outdir: /absolute/path/to/results
+
+# Optional fields inside an individual batch:
+#   samples: ['plate1_.*']  # Full-match regex; [] includes all cells.
+#   reference:
+#     genes: /absolute/path/to/batch_specific_annotation.gtf
+#   ilse_info:  # Must be per batch; top-level ilse_info is rejected in batch mode.
+#     cDNA:
+#       metadata:
+#         - /absolute/path/to/batch_01/cDNA/run1_meta.tsv
+#         - /absolute/path/to/batch_01/cDNA/run2_meta.tsv
+#       fastqdir: /absolute/path/to/batch_01/cDNA/fastq
+#     gDNA:
+#       samples: []  # Override the batch filter to include all gDNA cells.
+# Without overrides, discover tables in data/<batch>/<modality>/ and FASTQs
+# in its fastq/ folder. Resequencing combines exact sample names within a batch.
+
+# Optional Methscan settings apply to all batches here, or can be placed inside
+# one batch to override its settings. Uncomment and edit a complete option string.
+# Input/output paths and threads are controlled by the workflow.
+# Keep input-format biscuit_short for BISCUIT BED.
+# methscan_prepare_args: >-
+#   --input-format biscuit_short
+# methscan_filter_args: >-
+#   --min-sites 50000
+#   --min-meth 40
+#   --max-meth 90
+# Empty strings use the tool defaults for the remaining options.
+# methscan_smooth_args: ""
+# methscan_scan_args: ""
+# methscan_matrix_args: ""

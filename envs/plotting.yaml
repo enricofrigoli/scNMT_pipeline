@@ -1,0 +1,7 @@
+name: plotting
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.10
+  - pandas
+  - matplotlib-base

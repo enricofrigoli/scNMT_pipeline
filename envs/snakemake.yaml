@@ -3,6 +3,6 @@ channels:
   - conda-forge
 dependencies:
   - python>=3.12
-  - snakemake>=9.0
+  - snakemake>=9.19
   - xlrd>=2.0
   - openpyxl>=3.1

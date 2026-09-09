@@ -1,10 +1,20 @@
-# You can copy-paste these sections to snakeconfig.yaml and modify them there
-# Any section that is in snakeconfig.yaml will overwrite the one here
-# If you want to change a section you must copy it entirely in the snakeconfig.yaml 
-# file, even arguments you are not changing
+# Copy settings to snakeconfig.yaml to override these defaults.
+# In batches mode, processing options can also be overridden inside a batch.
+# Replace a complete *_args string when changing its command-line options.
 
-# Choose between star_umite or salmon for transcriptomic data and biscuit_methscan for genomic
+# Configure batches.<batch>.modality as cDNA, gDNA, or both in snakeconfig.yaml.
+# Without batches, use top-level modality; when omitted, infer cDNA from
+# star_umite or gDNA from biscuit_methscan for existing configurations.
+# cDNA uses star_umite; gDNA uses biscuit_methscan. For both, use star_umite.
 pipeline: star_umite
+
+# Input/output roots default to data/ and results/ beside Snakefile.
+# Optional datadir and outdir overrides in snakeconfig.yaml must be absolute.
+# Batch metadata is discovered in data/<batch>/<modality>/ and reads in fastq/.
+# Batch ilse_info.cDNA and ilse_info.gDNA sections override those locations.
+# Without batches, the existing data/<modality>/ layout remains supported.
+# Shared reference.star_index (directory) and reference.biscuit_index (prefix)
+# reuse supplied indexes; omit them to build indexes under each batch result.
 
 # Set arguments for umiextract 
 # umilen: length of umi in your library preparation
@@ -42,16 +52,6 @@ star_align_args: >-
   --readFilesCommand zcat
   --outSAMtype BAM Unsorted
 
-# Salmon indexing parameters
-# k: kmer size for index building, 31 is a good default 
-salmon_index_args: >-
-  -k 31
-
-# Salmon quantific parameters
-# -l: library type, I (Inward), S (Stranded), F (Read1 is Forward) (see https://salmon.readthedocs.io/en/latest/library_type.html)
-salmon_quant_args: >-
-  -l ISF
-
 # Biscuit genome index parameters
 # -a: Algorithm used to build the index, bwtsw is default, for very small genomes use div
 biscuit_index_alg: >-
@@ -63,3 +63,24 @@ biscuit_index_alg: >-
 biscuit_align_args: >-
   -T 30
   -k 19
+
+# Methscan arguments are strings passed as command-line options.
+# The workflow supplies input/output paths and threads; do not include those here.
+# Keep input-format biscuit_short for the BISCUIT BED files produced upstream.
+methscan_prepare_args: >-
+  --input-format biscuit_short
+
+# Cell filtering thresholds; these retain the pipeline's existing defaults.
+# Optional --cell-names requires an existing absolute file path. Changes to this
+# tracked input file trigger filtering again.
+methscan_filter_args: >-
+  --min-sites 50000
+  --min-meth 40
+  --max-meth 90
+
+# Empty strings use Methscan's defaults for the remaining options.
+methscan_smooth_args: ""
+# --write-header is unsupported: the matrix step requires BED without a header.
+methscan_scan_args: ""
+# --sparse is unsupported: H5AD conversion requires CSV matrix output.
+methscan_matrix_args: ""

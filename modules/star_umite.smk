@@ -2,7 +2,7 @@ rule fix_gtf_exon_ids:
     input:
         gtf = ancient(config['reference']['genes'])
     output:
-        gtf = join(dirname(config['reference']['genes']), 'genes_with_exon_id.gtf')
+        gtf = join(config['outdir'], 'reference/genes_with_exon_id.gtf')
     run:
         import os
 
@@ -60,29 +60,31 @@ rule fix_gtf_exon_ids:
             f.writelines(processed_lines)
 
 
-rule prepare_star_indices:
-    input:
-        ref_genome = ancient(config['reference']['genome']),
-        gene_annotation = ancient(rules.fix_gtf_exon_ids.output)
-    output:
-        # use specified star index directory if available, otherwise default to a subdirectory next to genome fasta
-        directory(join(dirname(config['reference']['genome']), 'star_index'))
-    params:
-        star_args = config['star_index_args']
-    log: join(dirname(config['reference']['genome']), 'star_genome_generate.log')
-    threads: workflow.cores
-    conda: '../envs/star.yaml'
-    shell:
-        r'''
-        STAR \
-            {params.star_args} \
-            --runThreadN {threads} \
-            --runMode genomeGenerate \
-            --genomeDir {output} \
-            --genomeFastaFiles {input.ref_genome} \
-            --sjdbGTFfile {input.gene_annotation} \
-            2> {log}
-        '''
+if not config['reference'].get('star_index'):
+    rule prepare_star_indices:
+        input:
+            ref_genome = ancient(config['reference']['genome']),
+            gene_annotation = ancient(rules.fix_gtf_exon_ids.output)
+        output:
+            directory(config['star_index_dir'])
+        params:
+            star_args = config['star_index_args'],
+            outprefix = join(config['outdir'], 'reference/star_genome_generate_')
+        log: join(config['outdir'], 'reference/star_genome_generate.log')
+        threads: workflow.cores
+        conda: '../envs/star.yaml'
+        shell:
+            r'''
+            STAR \
+                {params.star_args} \
+                --runThreadN {threads} \
+                --runMode genomeGenerate \
+                --genomeDir {output} \
+                --genomeFastaFiles {input.ref_genome} \
+                --sjdbGTFfile {input.gene_annotation} \
+                --outFileNamePrefix {params.outprefix} \
+                2> {log}
+            '''
 
 
 # rule link_fastq_files:
@@ -114,8 +116,8 @@ rule prepare_star_indices:
 
 rule extract_umi:
     input:
-        read1 = lambda wildcards: join(fqid_to_dir[wildcards.fqid], '{fqid}/fastq/{fqid}_R1.fastq.gz'),
-        read2 = lambda wildcards: join(fqid_to_dir[wildcards.fqid], '{fqid}/fastq/{fqid}_R2.fastq.gz')
+        read1 = lambda wildcards: fqid_to_reads[wildcards.fqid]['read1'],
+        read2 = lambda wildcards: fqid_to_reads[wildcards.fqid]['read2']
     output:
         read1_umi = temp(join(config['outdir'], 'star_alignments/{sample}/{fqid}_R1_umiextract.fastq.gz')),
         read2_umi = temp(join(config['outdir'], 'star_alignments/{sample}/{fqid}_R2_umiextract.fastq.gz'))
@@ -140,14 +142,15 @@ rule align_to_ref:
     input:
         read1 = lambda wildcards: expand(rules.extract_umi.output.read1_umi, sample=wildcards.sample, fqid=sample_to_fqid[wildcards.sample]),
         read2 = lambda wildcards: expand(rules.extract_umi.output.read2_umi, sample=wildcards.sample, fqid=sample_to_fqid[wildcards.sample]),
-        indices = ancient(rules.prepare_star_indices.output)
+        indices = ancient(config['star_index_inputs'])
     output:
         join(config['outdir'], 'star_alignments/{sample}/{sample}_Aligned.out.bam')
     params:
         read1_comma = lambda wildcards, input: ','.join(input.read1),
         read2_comma = lambda wildcards, input: ','.join(input.read2),
         outprefix = join(config['outdir'], 'star_alignments/{sample}/{sample}_'),
-        star_args = config['star_align_args']
+        star_args = config['star_align_args'],
+        index_dir = config['star_index_dir']
     log: join(config['outdir'], 'star_alignments/{sample}/STAR_alignment.log')
     threads: min(4, workflow.cores)
     conda: '../envs/star.yaml'
@@ -156,27 +159,11 @@ rule align_to_ref:
         STAR \
             {params.star_args} \
             --runThreadN {threads} \
-            --genomeDir {input.indices} \
+            --genomeDir {params.index_dir:q} \
             --genomeLoad LoadAndKeep \
             --readFilesIn {params.read1_comma} {params.read2_comma} \
             --outFileNamePrefix {params.outprefix} \
             > {log}
-        '''
-
-
-rule unload_star_genome:
-    input:
-        expand(rules.align_to_ref.output, sample=sample_to_fqid.keys())
-    output:
-        temp(touch(join(config['outdir'], 'star_genome_unloaded.flag')))
-    conda: '../envs/star.yaml'
-    params:
-        indices = rules.prepare_star_indices.output
-    shell:
-        r'''
-        STAR \
-            --genomeLoad Remove \
-            --genomeDir {params.indices}
         '''
 
 
@@ -194,7 +181,7 @@ rule parse_dump_GTF:
     input:
         temp(rules.fix_gtf_exon_ids.output)
     output:
-        join(dirname(config['reference']['genes']), 'umicount_GTF_dump.pkl')
+        join(config['outdir'], 'reference/umicount_GTF_dump.pkl')
     conda: '../envs/umite.yaml'
     shell:
         'umicount -g {input} --GTF_dump {output}'
@@ -202,7 +189,6 @@ rule parse_dump_GTF:
 
 rule count_umis:
     input:
-        rules.unload_star_genome.output,
         bams = expand(rules.sort_bam_by_query_name.output, sample=sample_to_fqid.keys()),
         gtf_dump = ancient(rules.parse_dump_GTF.output)
     output:
@@ -243,7 +229,7 @@ rule build_trsc_anndata:
         join(config['outdir'], 'umicount/umite.U.tsv'),
         gtf_dump = ancient(rules.parse_dump_GTF.output)
     output:
-        join(config['outdir'], f'{config['dataset']}.star_umite.h5ad')
+        join(config['outdir'], f'{config["dataset"]}.star_umite.h5ad')
     params:
         filename_prefix = config['dataset'],
         samplename_suffix = '_Aligned.qn_sorted.bam'

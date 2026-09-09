@@ -6,27 +6,46 @@
 #         multiext(join(config['outdir'], f'qc_plots/{config['dataset']}'), '_CpG_count_vs_meth_frac.png')
 
 
-rule prepare_biscuit_index:
+# htslib creates a FASTA index beside its input; stage it inside the results tree.
+rule prepare_biscuit_reference:
     input:
         ancient(config['reference']['genome'])
     output:
-        directory(join(dirname(config['reference']['genome']), 'biscuit_index'))
-    params:
-        prefix = join(dirname(config['reference']['genome']), 'biscuit_index', basename(config['reference']['genome']).removesuffix('.gz').removesuffix('.bgz')),
-        alg = config['biscuit_index_alg']
+        genome = join(config['outdir'], 'reference/genome.fa'),
+        fai = join(config['outdir'], 'reference/genome.fa.fai')
     conda: '../envs/biscuit.yaml'
     shell:
         '''
-        mkdir -p {output:q}
-        biscuit index {input:q} -p {params.prefix:q} {params.alg}
+        ln -sf {input:q} {output.genome:q}
+        samtools faidx {output.genome:q}
         '''
+
+
+if not config['reference'].get('biscuit_index'):
+    rule prepare_biscuit_index:
+        input:
+            ancient(rules.prepare_biscuit_reference.output.genome)
+        output:
+            directory(join(config['outdir'], 'reference/biscuit_index'))
+        params:
+            prefix = config['biscuit_index_prefix'],
+            alg = config['biscuit_index_alg']
+        log: join(config['outdir'], 'reference/biscuit_index.log')
+        conda: '../envs/biscuit.yaml'
+        shell:
+            '''
+            mkdir -p {output:q}
+            biscuit index {input:q} -p {params.prefix:q} {params.alg} > {log:q} 2>&1
+            '''
 
 
 rule trim_adaptors:
     input:
-        ancient(lambda wildcards: multiext(join(fqid_to_dir[wildcards.fqid], '{fqid}/fastq/{fqid}'), '_R1.fastq.gz', '_R2.fastq.gz'))
+        read1 = ancient(lambda wildcards: fqid_to_reads[wildcards.fqid]['read1']),
+        read2 = ancient(lambda wildcards: fqid_to_reads[wildcards.fqid]['read2'])
     output:
-        temp(multiext(join(config['outdir'], 'biscuit/{sample}/{fqid}'), '_R1_val_1.fq.gz', '_R2_val_2.fq.gz'))
+        read1 = temp(join(config['outdir'], 'biscuit/{sample}/{fqid}_R1_val_1.fq.gz')),
+        read2 = temp(join(config['outdir'], 'biscuit/{sample}/{fqid}_R2_val_2.fq.gz'))
     params:
         outdir = join(config['outdir'], 'biscuit/{sample}')
     log: join(config['outdir'], 'biscuit/{sample}/{fqid}.trim_galore.log')
@@ -35,26 +54,43 @@ rule trim_adaptors:
         'trim_galore --paired {input} --output_dir {params.outdir} 2> {log}'
 
 
+# BISCUIT accepts one FASTQ pair; keep resequenced runs in identical mate order.
+rule merge_trimmed_reads:
+    input:
+        read1 = lambda wildcards: expand(rules.trim_adaptors.output.read1, sample=wildcards.sample, fqid=sample_to_fqid[wildcards.sample]),
+        read2 = lambda wildcards: expand(rules.trim_adaptors.output.read2, sample=wildcards.sample, fqid=sample_to_fqid[wildcards.sample])
+    output:
+        read1 = temp(join(config['outdir'], 'biscuit/{sample}/merged_R1.fq.gz')),
+        read2 = temp(join(config['outdir'], 'biscuit/{sample}/merged_R2.fq.gz'))
+    shell:
+        '''
+        cat {input.read1:q} > {output.read1:q}
+        cat {input.read2:q} > {output.read2:q}
+        '''
+
+
 rule align_to_ref:
     input:
-        trimmed_reads = lambda wildcards: expand(rules.trim_adaptors.output, sample=wildcards.sample, fqid=sample_to_fqid[wildcards.sample]),
-        index = ancient(rules.prepare_biscuit_index.output)
+        read1 = rules.merge_trimmed_reads.output.read1,
+        read2 = rules.merge_trimmed_reads.output.read2,
+        index = ancient(config['biscuit_index_inputs'])
     output:
         temp(join(config['outdir'], 'biscuit/{sample}/{sample}.biscuit_aligned.bam'))
     params:
-        base = rules.prepare_biscuit_index.params.prefix,
+        base = config['biscuit_index_prefix'],
         biscuit_args = config['biscuit_align_args']
     log: join(config['outdir'], 'biscuit/{sample}/{sample}.biscuit_align.log')
     threads: min(4, workflow.cores) 
     conda: '../envs/biscuit.yaml'
     shell:
-        'biscuit align -@ {threads} {params.base} {params.biscuit_args} {input.trimmed_reads} 2> {log} | samtools view -b -o {output}'
+        'biscuit align -@ {threads} {params.base:q} {params.biscuit_args} {input.read1:q} {input.read2:q} 2> {log:q} | samtools view -b -o {output:q}'
 
 
 rule deduplicate_and_sort_bam:
     input:
         bam = rules.align_to_ref.output,
-        ref_genome = ancient(config['reference']['genome'])
+        ref_genome = ancient(rules.prepare_biscuit_reference.output.genome),
+        fai = ancient(rules.prepare_biscuit_reference.output.fai)
     output:
         join(config['outdir'], 'biscuit/{sample}/{sample}.dedup_sorted.bam')
     log: join(config['outdir'], 'biscuit/{sample}/{sample}.dupsifter.stat')
@@ -76,9 +112,9 @@ rule deduplicate_and_sort_bam:
 
 rule index_bam:
     input:
-        '{base}.bam'
+        join(config['outdir'], 'biscuit/{sample}/{sample}.dedup_sorted.bam')
     output:
-        '{base}.bam.bai'
+        join(config['outdir'], 'biscuit/{sample}/{sample}.dedup_sorted.bam.bai')
     conda: '../envs/biscuit.yaml'
     shell:
         'samtools index {input}'
@@ -88,7 +124,8 @@ rule extract_variants:
     input:
         bam = rules.deduplicate_and_sort_bam.output,
         bai = rules.deduplicate_and_sort_bam.output[0] + '.bai',
-        ref_genome = ancient(config['reference']['genome'])
+        ref_genome = ancient(rules.prepare_biscuit_reference.output.genome),
+        fai = ancient(rules.prepare_biscuit_reference.output.fai)
     output:
         temp(join(config['outdir'], 'biscuit/{sample}/{sample}_variants.vcf.bgz'))
     log: join(config['outdir'], 'biscuit/{sample}/{sample}.biscuit_pileup.log')
@@ -119,11 +156,11 @@ rule prepare_methscan_data_and_rename_columns:
     output:
         directory(join(config['outdir'], 'methscan/compact_data'))
     params:
-        input_format = 'biscuit_short'
+        methscan_args = config['methscan_prepare_args']
     log: join(config['outdir'], 'methscan/methscan_prepare.log')
     conda: '../envs/methscan.yaml'
     run:
-        shell('methscan prepare --input-format {params.input_format} {input} {output} 2> {log}')
+        shell('methscan prepare {params.methscan_args} {input} {output} 2> {log}')
         # rename the columns of methscan data to the original sample names
         cell_stats = pd.read_csv(join(str(output), 'cell_stats.csv'))
         cell_stats['cell_name'] = cell_stats['cell_name'].str.removesuffix('_HCG')
@@ -131,29 +168,46 @@ rule prepare_methscan_data_and_rename_columns:
         cell_stats.to_csv(join(str(output), 'cell_stats.csv'), index=False)
 
 
+rule plot_methscan_cell_stats:
+    input:
+        data_dir = rules.prepare_methscan_data_and_rename_columns.output,
+        plot_script = workflow.source_path('../scripts/plot_methscan_cell_stats.py')
+    output:
+        join(config['outdir'], 'qc_plots/cell_stats.png')
+    conda: '../envs/plotting.yaml'
+    shell:
+        'python3 {input.plot_script:q} {input.data_dir:q}/cell_stats.csv -o {output:q}'
+
+
 rule filter_methscan_data:
     input:
-        rules.prepare_methscan_data_and_rename_columns.output
+        data_dir = rules.prepare_methscan_data_and_rename_columns.output,
+        cell_names = config.get('methscan_filter_cell_names', [])
     output:
         directory(join(config['outdir'], 'methscan/filtered_data'))
+    params:
+        methscan_args = config['methscan_filter_args']
     log: join(config['outdir'], 'methscan/methscan_filter.log')
     conda: '../envs/methscan.yaml'
     shell:
-        'methscan filter --min-sites 10000 --min-meth 10 --max-meth 90 {input} {output} 2> {log}'
+        'methscan filter {params.methscan_args} {input.data_dir} {output} 2> {log}'
 
 
 rule find_methscan_VMRs:
     input:
         rules.filter_methscan_data.output
     output:
-        join(config['outdir'], f'methscan/{config['dataset']}_VMRs.bed')
+        join(config['outdir'], f'methscan/{config["dataset"]}_VMRs.bed')
+    params:
+        smooth_args = config['methscan_smooth_args'],
+        scan_args = config['methscan_scan_args']
     log: join(config['outdir'], 'methscan/methscan_scan.log')
     conda: '../envs/methscan.yaml'
     threads: workflow.cores
     shell:
         '''
-        methscan smooth {input} 2>> {log}
-        methscan scan --threads {threads} {input} {output} 2>> {log}
+        methscan smooth {params.smooth_args} {input} 2>> {log}
+        methscan scan {params.scan_args} --threads {threads} {input} {output} 2>> {log}
         '''
 
 
@@ -163,31 +217,20 @@ rule construct_methscan_matrix:
         data_dir = rules.filter_methscan_data.output
     output:
         directory(join(config['outdir'], 'methscan/VMR_matrices'))
+    params:
+        methscan_args = config['methscan_matrix_args']
     log: join(config['outdir'], 'methscan/methscan_matrix.log')
     conda: '../envs/methscan.yaml'
     threads: workflow.cores
     shell:
-        'methscan matrix --threads {threads} {input.vmrs} {input.data_dir} {output} 2> {log}'
+        'methscan matrix {params.methscan_args} --threads {threads} {input.vmrs} {input.data_dir} {output} 2> {log}'
 
 
 rule build_meth_anndata:
     input:
         rules.construct_methscan_matrix.output
     output:
-        join(config['outdir'], f'{config['dataset']}.biscuit_methscan.h5ad')
+        join(config['outdir'], f'{config["dataset"]}.biscuit_methscan.h5ad')
     conda: '../envs/anndata.yaml'
     shell:
         'python3 scripts/summarize_methscan_matrix.py {input}/mean_shrunken_residuals.csv.gz -o {output}'
-
-
-# rule generate_methscan_qc_plots:
-#     input:
-#         methscan_data = rules.prepare_methscan_data_and_rename_columns.output,
-#         tss = ancient(config['ref_genome']['tss'])
-#     output:
-#         multiext(join(config['outdir'], f'qc_plots/{config['dataset']}'), '_CpG_count_vs_meth_frac.png')
-#     params:
-#         outprefix = join(config['outdir'], f'qc_plots/{config['dataset']}')
-#     conda: '../envs/plotting.yaml'
-#     shell:
-#         'python3 scripts/plot_methscan_qc.py -t {input.tss} {input.methscan_data} -o {params.outprefix}'
