@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,7 @@ from typing import Any
 import yaml
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, VerticalScroll
-from textual.widgets import Button, Input, Select, Static
+from textual.widgets import Button, Input, Select, Static, TextArea
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -42,6 +43,13 @@ FIELD_SPECS = (
         "Pipeline",
         "star_umite, salmon or biscuit_methscan",
         "choice",
+        "Core",
+    ),
+    FieldSpec(
+        "samples",
+        "Sample filters (optional)",
+        "One regex per line; leave blank to include all samples.",
+        "regex_list",
         "Core",
     ),
     FieldSpec(
@@ -103,7 +111,13 @@ def load_config() -> tuple[dict[str, Any], str | None]:
     return data, None
 
 
-def get_nested(mapping: dict[str, Any], dotted_key: str, default: str = "") -> str:
+def get_nested(
+    mapping: dict[str, Any],
+    dotted_key: str,
+    default: str = "",
+    *,
+    list_separator: str = " ",
+) -> str:
     """Return a nested value as a string for form prefill."""
     current: Any = mapping
     for part in dotted_key.split("."):
@@ -113,7 +127,7 @@ def get_nested(mapping: dict[str, Any], dotted_key: str, default: str = "") -> s
     if current is None:
         return default
     if isinstance(current, list):
-        return " ".join(str(item) for item in current)
+        return list_separator.join(str(item) for item in current)
     return str(current)
 
 
@@ -123,6 +137,7 @@ def build_nested_config(base: dict[str, Any], values: dict[str, Any]) -> dict[st
     config["dataset"] = values["dataset"]
     config["outdir"] = values["outdir"]
     config["pipeline"] = values["pipeline"]
+    config["samples"] = values["samples"]
 
     reference = dict(config.get("reference") or {})
     reference["genome"] = values["reference.genome"]
@@ -163,6 +178,22 @@ def validate_choice(value: str, label: str, choices: tuple[str, ...]) -> str:
     if cleaned not in choices:
         raise FieldValidationError(f"{label} must be one of: {', '.join(choices)}.")
     return cleaned
+
+
+def validate_sample_patterns(value: str) -> list[str]:
+    """Validate one regex per nonblank line without changing pattern whitespace."""
+    patterns = []
+    for line_number, pattern in enumerate(value.splitlines(), start=1):
+        if not pattern.strip():
+            continue
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise FieldValidationError(
+                f"Invalid sample regex on line {line_number}: {exc}"
+            ) from exc
+        patterns.append(pattern)
+    return patterns
 
 
 def validate_path(value: str, label: str, *, must_exist: bool) -> str:
@@ -219,6 +250,11 @@ class ConfigEditor(App):
         width: 1fr;
     }
 
+    TextArea {
+        width: 1fr;
+        height: 6;
+    }
+
     #status {
         margin-top: 1;
         color: $text-muted;
@@ -260,7 +296,11 @@ class ConfigEditor(App):
             for section in ("Core", "Reference", "ILSe info"):
                 yield Static(section, classes="section")
                 for spec in (item for item in FIELD_SPECS if item.section == section):
-                    value = get_nested(self.base_config, spec.key)
+                    value = get_nested(
+                        self.base_config,
+                        spec.key,
+                        list_separator="\n" if spec.kind == "regex_list" else " ",
+                    )
                     with Horizontal(classes="row"):
                         yield Static(spec.label, classes="field-label")
                         if spec.key == "pipeline":
@@ -272,6 +312,13 @@ class ConfigEditor(App):
                                 allow_blank=False,
                                 id=widget_id(spec.key),
                             )
+                        elif spec.kind == "regex_list":
+                            input_widget = TextArea(
+                                text=value,
+                                soft_wrap=False,
+                                id=widget_id(spec.key),
+                            )
+                            input_widget.border_title = spec.placeholder
                         else:
                             input_widget = Input(
                                 value=value,
@@ -336,6 +383,7 @@ class ConfigEditor(App):
             "Pipeline",
             PIPELINES,
         )
+        samples = validate_sample_patterns(self.inputs["samples"].text)
 
         genome = validate_path(
             str(self.inputs["reference.genome"].value),
@@ -377,6 +425,7 @@ class ConfigEditor(App):
         cleaned["dataset"] = dataset
         cleaned["outdir"] = outdir
         cleaned["pipeline"] = pipeline
+        cleaned["samples"] = samples
         cleaned["reference.genome"] = genome
         cleaned["reference.genes"] = genes
         cleaned["reference.transcriptome"] = transcriptome

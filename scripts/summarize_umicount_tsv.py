@@ -21,6 +21,13 @@ args = parser.parse_args()
 
 df_umicount = pd.read_csv(args.umicount_tsv, sep='\t', index_col=0)
 
+# UMITE writes assignment counters alongside genes; exclude them from expression.
+df_umicount.drop(
+    columns=['_unmapped', '_multimapping', '_no_feature', '_ambiguous'],
+    errors='ignore',
+    inplace=True,
+)
+
 # rename rows (samples) and columns (genes)
 df_umicount.index = [os.path.basename(row_name).removesuffix(args.samplename_suffix) for row_name in df_umicount.index]
 

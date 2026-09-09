@@ -52,7 +52,7 @@ The config file `snakeconfig.yaml` is where you configure the pipeline parameter
 dataset: [dataset_name]
 outdir: [path_to_output_directory]
 
-samples: [sample_name_regex_pattern]
+samples: []  # Include all samples; optionally list full-match regex patterns.
 
 reference:
   genome: [path_to_genome_fasta]
@@ -72,11 +72,13 @@ pipeline: [pipeline_name]
 - `[paths_to_metadata_files]`: metadata files (space_separated) downloaded from ILSe website, typically named `[ILSe ID]-result.xls`. The pipeline will identify samples by the "Sample Name" column in these metadata files, so if the same sample name appears in multiple metadata files, the pipeline will treat them as **one sample being sequenced multiple times**. Therefore, make sure that sample names are consistent across sequencing runs and remember to delete rows that do not belong to the dataset being mapped.
 - `[paths_to_fastq_directories]`: directories (space_separated) to search for the FASTQ files, usually on the NGS drive. The pipeline will search for all FASTQ IDs specified in the "Unique ID / Lane" columns of the metadata files in these directories.
 - `[pipeline_name]`: the pipeline used to map the sequences, possible options are "star_umite", "salmon" or "biscuit_methscan".
-- `[sample_name_regex_pattern]`: (optional) regular expression pattern(s) used to select samples from the metadata files. The patterns are matched against the "Sample Name" column. Only samples whose names match at least one provided pattern are included in the pipeline. If no pattern is provided, all samples from the metadata files are included.
+- `samples`: optional regular expression pattern(s) used to select samples from the "Sample Name" column. For example, `samples: ['plate1_.*', 'plate2_.*']` selects those two plates. Each pattern must match the complete sample name. Omit this key or use `samples: []` to include all samples. A filter that selects no samples with FASTQ IDs causes an explicit error.
 
 > You can add any number of ILSe IDs to the `ilse_info` section, each with a metadata field and a fastq field. The pipeline will identify samples by the "Sample Name" column in the metadata file, so if the same sample name appears in two different metadata files, the pipeline will treat them as one sample being sequenced twice. Therefore, make sure that sample names are consistent across sequencing runs.
 
-Finally, there is an experimental `tui.py` that provides a user interface to edit the file. This will require packages `textual` and `textual-dev` to run but will likely make it easier to create/edit config.
+Finally, there is an experimental `tui.py` that provides a user interface to edit the file. This will require packages `textual` and `textual-dev` to run but will likely make it easier to create/edit config. Its sample-filter field accepts one regex per line; leave it blank to include all samples.
+
+The `star_umite` branch pools exonic and intronic UMI evidence for each gene before UMI correction and deduplication (`--combine_unspliced`). The final H5AD uses `umicount/umite.U.tsv`, containing combined deduplicated UMI counts. Non-UMI internal fragment counts (`umite.R.tsv`) and duplicate counts (`umite.D.tsv`) remain separate TSV outputs.
 
 # Running the pipeline
 

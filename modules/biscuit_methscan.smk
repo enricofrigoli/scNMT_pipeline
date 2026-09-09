@@ -12,11 +12,14 @@ rule prepare_biscuit_index:
     output:
         directory(join(dirname(config['reference']['genome']), 'biscuit_index'))
     params:
-        prefix = join(dirname(config['reference']['genome']), 'biscuit_index', basename(config['reference']['genome']).removesuffix('.gz').removesuffix('.bgz'))
+        prefix = join(dirname(config['reference']['genome']), 'biscuit_index', basename(config['reference']['genome']).removesuffix('.gz').removesuffix('.bgz')),
         alg = config['biscuit_index_alg']
     conda: '../envs/biscuit.yaml'
     shell:
-        'biscuit index {input} -p {params.prefix} {params.alg}'
+        '''
+        mkdir -p {output:q}
+        biscuit index {input:q} -p {params.prefix:q} {params.alg}
+        '''
 
 
 rule trim_adaptors:

@@ -1,8 +1,8 @@
 rule fix_gtf_exon_ids:
     input:
-        ancient(config['reference']['genes'])
+        gtf = ancient(config['reference']['genes'])
     output:
-        join(dirname(config['reference']['genes']), 'genes_with_exon_id.gtf')
+        gtf = join(dirname(config['reference']['genes']), 'genes_with_exon_id.gtf')
     run:
         import os
 
@@ -206,7 +206,7 @@ rule count_umis:
         bams = expand(rules.sort_bam_by_query_name.output, sample=sample_to_fqid.keys()),
         gtf_dump = ancient(rules.parse_dump_GTF.output)
     output:
-        multiext(join(config['outdir'], 'umicount/umite'), '.D.tsv', '.RE.tsv', '.RI.tsv', '.UE.tsv', '.UI.tsv')
+        multiext(join(config['outdir'], 'umicount/umite'), '.D.tsv', '.R.tsv', '.U.tsv')
     params:
         outdir = join(config['outdir'], 'umicount'),
         umicount_args = config['umicount_args']
@@ -217,6 +217,7 @@ rule count_umis:
         r'''
         umicount \
             {params.umicount_args} \
+            --combine_unspliced \
             -c {threads} \
             --GTF_skip_parse {input.gtf_dump} \
             --bams {input.bams} \
@@ -239,7 +240,7 @@ rule count_umis:
 
 rule build_trsc_anndata:
     input:
-        join(config['outdir'], 'umicount/umite.UE.tsv'),
+        join(config['outdir'], 'umicount/umite.U.tsv'),
         gtf_dump = ancient(rules.parse_dump_GTF.output)
     output:
         join(config['outdir'], f'{config['dataset']}.star_umite.h5ad')

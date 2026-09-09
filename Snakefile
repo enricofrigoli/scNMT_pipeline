@@ -62,19 +62,19 @@ for path in paths_to_check:
 sample_to_fqid = defaultdict(list)
 fqid_to_dir = {}
 
-# check if regex patterns are provided
-use_regex = (
-    'samples' in config
-    and config['samples']
-)
-
-# compile regex once
-if use_regex:
-    patterns = [
-        re.compile(pattern)
-        for pattern in config['samples']
-    ]
-print(patterns)
+# An omitted or empty filter includes all samples. Accept a single regex too.
+sample_patterns = config.get('samples') or []
+if isinstance(sample_patterns, str):
+    sample_patterns = [sample_patterns]
+if not isinstance(sample_patterns, list) or any(
+    not isinstance(pattern, str) for pattern in sample_patterns
+):
+    raise ValueError('samples must be a regex string or a list of regex strings')
+try:
+    patterns = [re.compile(pattern) for pattern in sample_patterns]
+except re.error as exc:
+    raise ValueError(f'Invalid sample filter regex: {exc}') from exc
+use_regex = bool(patterns)
 
 for metadata in config['ilse_info']['metadata']:
     metadata_ext = os.path.splitext(metadata)[-1]
@@ -147,6 +147,12 @@ for metadata in config['ilse_info']['metadata']:
     #     if not found:
     #         raise ValueError(f'Could not find FASTQ ID {fqid} for sample {sample} in any of the specified directories') 
 
+
+if not sample_to_fqid:
+    raise ValueError(
+        'No samples with FASTQ IDs were selected. Check the metadata and samples '
+        'filter; omit samples or set samples: [] to include all samples.'
+    )
 
 print("sample_to_fqid =", dict(sample_to_fqid))
 print("fqid_to_dir =", fqid_to_dir)
