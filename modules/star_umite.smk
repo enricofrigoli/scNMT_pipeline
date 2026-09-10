@@ -60,31 +60,8 @@ rule fix_gtf_exon_ids:
             f.writelines(processed_lines)
 
 
-if not config['reference'].get('star_index'):
-    rule prepare_star_indices:
-        input:
-            ref_genome = ancient(config['reference']['genome']),
-            gene_annotation = ancient(rules.fix_gtf_exon_ids.output)
-        output:
-            directory(config['star_index_dir'])
-        params:
-            star_args = config['star_index_args'],
-            outprefix = join(config['outdir'], 'reference/star_genome_generate_')
-        log: join(config['outdir'], 'reference/star_genome_generate.log')
-        threads: workflow.cores
-        conda: '../envs/star.yaml'
-        shell:
-            r'''
-            STAR \
-                {params.star_args} \
-                --runThreadN {threads} \
-                --runMode genomeGenerate \
-                --genomeDir {output} \
-                --genomeFastaFiles {input.ref_genome} \
-                --sjdbGTFfile {input.gene_annotation} \
-                --outFileNamePrefix {params.outprefix} \
-                2> {log}
-            '''
+# Index generation lives in the top-level Snakefile: one index per reference
+# genome is shared by every batch, so it must not be declared per batch.
 
 
 # rule link_fastq_files:
@@ -125,7 +102,9 @@ rule extract_umi:
     params:
         outdir = join(config['outdir'], 'star_alignments/{sample}'),
         umiextract_args = config['umiextract_args']
-    threads: min(4, workflow.cores)
+    # umiextract parallelises over read pairs, and this rule passes exactly one,
+    # so extra cores would be reserved but never used.
+    threads: 1
     conda: '../envs/umite.yaml'
     shell:
         r'''
@@ -177,20 +156,28 @@ rule sort_bam_by_query_name:
         'samtools cat {input} | samtools sort -n -o {output}' # umicount requires the BAM file to be sorted by query name (instead of genomic location)
 
 
+# umicount stores the parsed features per strand only when reads will query
+# them by strand, and refuses a dump whose mode differs from --stranded. The
+# mode is therefore part of the dump name so the two rules cannot disagree.
+stranded = config['umicount_stranded']
+
+
 rule parse_dump_GTF:
     input:
         temp(rules.fix_gtf_exon_ids.output)
     output:
-        join(config['outdir'], 'reference/umicount_GTF_dump.pkl')
+        join(config['outdir'], f'reference/umicount_GTF_dump.{stranded}.pkl')
+    params:
+        stranded = stranded
     conda: '../envs/umite.yaml'
     shell:
-        'umicount -g {input} --GTF_dump {output}'
+        'umicount -g {input} --GTF_dump {output} --stranded {params.stranded}'
 
 
 rule count_umis:
     input:
         bams = expand(rules.sort_bam_by_query_name.output, sample=sample_to_fqid.keys()),
-        gtf_dump = ancient(rules.parse_dump_GTF.output)
+        gtf_dump = rules.parse_dump_GTF.output
     output:
         multiext(join(config['outdir'], 'umicount/umite'), '.D.tsv', '.R.tsv', '.U.tsv')
     params:
@@ -227,7 +214,7 @@ rule count_umis:
 rule build_trsc_anndata:
     input:
         join(config['outdir'], 'umicount/umite.U.tsv'),
-        gtf_dump = ancient(rules.parse_dump_GTF.output)
+        gtf_dump = rules.parse_dump_GTF.output
     output:
         join(config['outdir'], f'{config["dataset"]}.star_umite.h5ad')
     params:

@@ -14,7 +14,9 @@ pipeline: star_umite
 # Batch ilse_info.cDNA and ilse_info.gDNA sections override those locations.
 # Without batches, the existing data/<modality>/ layout remains supported.
 # Shared reference.star_index (directory) and reference.biscuit_index (prefix)
-# reuse supplied indexes; omit them to build indexes under each batch result.
+# reuse supplied indexes. An omitted star_index is generated once per genome in
+# star_index/ beside it, with --sjdbOverhang taken from the sampled read length;
+# an omitted biscuit_index is built under each batch result directory.
 
 # Set arguments for umiextract 
 # umilen: length of umi in your library preparation
@@ -29,12 +31,18 @@ umiextract_args: >-
   --search_region 30
   --fuzzy_umi
 
-# Set arguments for umicount 
+# Set arguments for umicount
 # mm_count_primary: count primary alignment (BAM flag 0x100) for multimapping reads
-# UMI_correct: Allows minor misalignments when matching UMIs 
+# UMI_correct: Allows minor misalignments when matching UMIs
+# stranded: how reads are assigned to the strand of a feature. Choose no, umi,
+#   yes, or reverse. umi resolves the strand of UMI-containing readpairs only,
+#   as SmartSeq3 internal fragments carry no strand; no ignores strand entirely.
+#   Other fixes in the fork can still change counts relative to the PyPI release.
+#   This value also determines how the GTF is parsed and cached per batch.
 umicount_args: >-
   --mm_count_primary
   --UMI_correct
+  --stranded umi
 
 # Star index building parameters
 # limitGenomeGenerateRAM: Maximum RAM this process can occupy
@@ -63,6 +71,13 @@ biscuit_index_alg: >-
 biscuit_align_args: >-
   -T 30
   -k 19
+
+# Biscuit pileup parameters
+# -p: keep reads flagged as an improper pair. Post-bisulfite libraries produce
+#     many of these, and biscuit discards them by default.
+# NOMe-seq mode (-N) is always added by the workflow: HCG/GCH extraction needs it.
+biscuit_pileup_args: >-
+  -p
 
 # Methscan arguments are strings passed as command-line options.
 # The workflow supplies input/output paths and threads; do not include those here.

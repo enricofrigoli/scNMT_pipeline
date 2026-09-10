@@ -3,6 +3,13 @@ channels:
   - conda-forge
   - bioconda
 dependencies:
+  # Pinned: umite pulls HTSeq from PyPI, which ships wheels only up to cp313.
+  # Without a pin conda installs the newest Python and the HTSeq build fails.
+  - python=3.12
+  - git  # Required by pip for the GitHub dependency below.
+  - pip
   - pip:
-      - umite>=0.1
-
+      # Patched fork adding CIGAR-aware feature lookup and --stranded counting,
+      # neither of which the PyPI release has. Pinned to a commit so the env
+      # stays reproducible and a fork push cannot silently change counts.
+      - umite @ git+https://github.com/enricofrigoli/umite.git@f491edd942445201fbd239aa9548d3eb9adc2c64

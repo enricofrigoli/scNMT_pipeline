@@ -2,6 +2,7 @@
 
 import copy
 import csv
+import gzip
 from pathlib import Path
 import shutil
 import subprocess
@@ -26,6 +27,16 @@ STAR_COMPONENTS = ("Genome", "SA", "SAindex", "genomeParameters.txt")
 BISCUIT_SUFFIXES = (
     ".bis.amb", ".bis.ann", ".bis.pac", ".dau.bwt", ".dau.sa", ".par.bwt", ".par.sa"
 )
+
+
+FIXTURE_READ_LENGTH = 50
+
+
+def write_fastq(path, read_length=FIXTURE_READ_LENGTH):
+    """Placeholder reads must be readable: --sjdbOverhang is derived from them."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(path, "wt") as handle:
+        handle.write(f"@fixture\n{'A' * read_length}\n+\n{'I' * read_length}\n")
 
 
 class BatchFixtures:
@@ -61,7 +72,7 @@ class BatchFixtures:
             self.write_table(layer / "metadata.csv", rows)
             for _, fqid in rows:
                 for read in (1, 2):
-                    (fastq / f"{fqid}_R{read}.fastq.gz").touch()
+                    write_fastq(fastq / f"{fqid}_R{read}.fastq.gz")
 
     def write_table(self, path, rows):
         with path.open("w", newline="") as handle:
@@ -321,13 +332,15 @@ class BatchWorkflowTests(BatchFixtures, unittest.TestCase):
         real_results.mkdir()
         alias_results = self.root / "results_alias"
         alias_results.symlink_to(real_results, target_is_directory=True)
-        generated_index = real_results / "batch_01" / "cDNA" / "reference" / "star_index"
+        generated_index = self.genome.parent / "star_index"
         generated_index.mkdir(parents=True)
         for filename in STAR_COMPONENTS:
             (generated_index / filename).touch()
+        index_alias = self.root / "star_index_alias"
+        index_alias.symlink_to(generated_index, target_is_directory=True)
         config = self.run_config(
             {"batch_01": {"modality": "cDNA"},
-             "batch_02": {"modality": "cDNA", "reference": {"star_index": str(generated_index)}}},
+             "batch_02": {"modality": "cDNA", "reference": {"star_index": str(index_alias)}}},
             outdir=str(alias_results),
         )
         output = self.dry_run(config)
@@ -340,10 +353,36 @@ class BatchWorkflowTests(BatchFixtures, unittest.TestCase):
     def test_batches_without_external_indexes_keep_index_builders(self):
         self.write_batch("batch_01", ("cDNA", "gDNA"))
         output = self.dry_run(self.run_config({"batch_01": {"modality": "both"}}))
-        self.assertIn("batch_01_cDNA_prepare_star_indices", output)
+        # The STAR index is generated once beside the genome, not per batch.
+        self.assertIn("rule generate_star_index:", output)
+        self.assertNotIn("batch_01_cDNA_prepare_star_indices", output)
+        self.assertIn(str(self.genome.parent / "star_index" / "Genome"), output)
+        self.assertNotIn("results/batch_01/cDNA/reference/star_index", output)
+        self.assertIn(f"--sjdbOverhang {FIXTURE_READ_LENGTH - 1}", output)
         self.assertIn("batch_01_gDNA_prepare_biscuit_index", output)
-        self.assertIn("results/batch_01/cDNA/reference/star_index", output)
         self.assertIn("results/batch_01/gDNA/reference/biscuit_index", output)
+
+    def test_two_cdna_batches_generate_one_shared_star_index(self):
+        for batch in ("batch_01", "batch_02"):
+            self.write_batch(batch, ("cDNA",))
+        output = self.dry_run(
+            self.run_config({batch: {"modality": "cDNA"} for batch in ("batch_01", "batch_02")})
+        )
+        self.assertEqual(len(self.job_blocks(output, "generate_star_index")), 1, output)
+        self.assertEqual(len(self.job_blocks(output, "unload_star_genome")), 1, output)
+
+    def test_longest_sampled_read_sets_the_shared_overhang(self):
+        self.write_batch("batch_01", ("cDNA",), rows=(("cell_a", "short_id"),))
+        self.write_batch("batch_02", ("cDNA",), rows=(("cell_b", "long_id"),))
+        for read in (1, 2):
+            write_fastq(
+                self.root / "data" / "batch_02" / "cDNA" / "fastq" / f"long_id_R{read}.fastq.gz",
+                read_length=FIXTURE_READ_LENGTH + 25,
+            )
+        output = self.dry_run(
+            self.run_config({batch: {"modality": "cDNA"} for batch in ("batch_01", "batch_02")})
+        )
+        self.assertIn(f"--sjdbOverhang {FIXTURE_READ_LENGTH + 24}", output)
 
     def test_appending_gdna_batch_leaves_completed_batch_untouched(self):
         self.write_batch("batch_01", ("gDNA",))
@@ -375,7 +414,7 @@ class BatchWorkflowTests(BatchFixtures, unittest.TestCase):
         layer_dir = self.root / "data" / "batch_01" / "gDNA"
         self.write_facility_table(layer_dir / "resequenced.csv", [("cell_a", "second")])
         for read in (1, 2):
-            (layer_dir / "fastq" / f"second_R{read}.fastq.gz").touch()
+            write_fastq(layer_dir / "fastq" / f"second_R{read}.fastq.gz")
         updated = self.dry_run(config)
         for rule in ("merge_trimmed_reads", "align_to_ref", "deduplicate_and_sort_bam"):
             jobs = self.job_blocks(updated, f"batch_01_gDNA_{rule}")
@@ -388,6 +427,25 @@ class BatchWorkflowTests(BatchFixtures, unittest.TestCase):
         self.assertIn("rule batch_01_gDNA_build_meth_anndata:", updated)
         self.assertNotIn("rule batch_02_gDNA_", updated)
         self.assertEqual(previous_mtimes, {p: p.stat().st_mtime_ns for p in unchanged_batch})
+
+    def test_changing_strand_mode_recounts_only_the_affected_batch(self):
+        for batch in ("batch_01", "batch_02"):
+            self.write_batch(batch, ("cDNA",))
+        config = self.run_config(
+            {"batch_01": {"modality": "cDNA"},
+             "batch_02": {"modality": "cDNA", "umicount_args": "--stranded no"}},
+            reference=self.external_reference,
+        )
+        self.complete_fixture(config)
+        config["batches"]["batch_01"]["umicount_args"] = "--UMI_correct --stranded reverse"
+        changed = self.dry_run(config)
+        for rule in ("parse_dump_GTF", "count_umis", "build_trsc_anndata"):
+            self.assertIn(f"rule batch_01_cDNA_{rule}:", changed)
+            self.assertNotIn(f"rule batch_02_cDNA_{rule}:", changed)
+        self.assertIn("umicount_GTF_dump.reverse.pkl", changed)
+        for batch in ("batch_01", "batch_02"):
+            self.assertNotIn(f"rule {batch}_cDNA_extract_umi:", changed)
+            self.assertNotIn(f"rule {batch}_cDNA_align_to_ref:", changed)
 
     def test_appending_a_batch_preserves_completed_jobs_with_shared_star_cleanup(self):
         self.write_batch("batch_01", ("cDNA",))

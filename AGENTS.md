@@ -33,7 +33,10 @@ Repository guide for agentic coding in this project.
 - `reference.genes` is required for cDNA. `reference.genome` is required for gDNA and STAR index building; cDNA with a supplied STAR index can omit it. Use uncompressed references.
 - Optional `reference.star_index` is an absolute directory containing `Genome`, `SA`, `SAindex`, and `genomeParameters.txt`.
 - Optional `reference.biscuit_index` is an absolute file prefix with `.bis.amb`, `.bis.ann`, `.bis.pac`, `.dau.bwt`, `.dau.sa`, `.par.bwt`, and `.par.sa` files.
-- Supplied indexes skip builders and can be shared between batches; otherwise retain builders under each batch/modality result directory.
+- Supplied indexes skip builders and can be shared between batches.
+- Generate the STAR index once per genome in `star_index` beside `reference.genome`, from the top-level `Snakefile`; never declare it inside the per-batch module.
+- Derive `--sjdbOverhang` from the sampled FASTQ read length minus one, taking the longest read across every batch sharing a generated index.
+- Generate an omitted `reference.biscuit_index` per batch under its result directory.
 - `datadir` and `outdir` default to `data/` and `results/` beside `Snakefile`.
 - Batch `modality` selects `cDNA`, `gDNA`, or `both` and is mandatory; only legacy configurations infer omitted modality from the pipeline selector.
 - Discover metadata tables in `data/<batch>/<modality>/` and reads under its `fastq/` folder; legacy configurations retain `data/<modality>/`.
@@ -51,6 +54,10 @@ Repository guide for agentic coding in this project.
 - Final batch matrices are `<batch>.star_umite.h5ad` and `<batch>.biscuit_methscan.h5ad`; retain legacy output names when `batches` is absent.
 - Deduplicate repeated FASTQ IDs within a cell.
 - Configure Methscan through string fields `methscan_prepare_args`, `methscan_filter_args`, `methscan_smooth_args`, `methscan_scan_args`, and `methscan_matrix_args`.
+- Configure BISCUIT pileup through `biscuit_pileup_args`, defaulting to `-p` to keep improper pairs; the workflow always adds `-N` for NOMe-seq.
+- Install UMITE from `github.com/enricofrigoli/umite` at the commit pinned in `envs/umite.yaml`, not from PyPI; that fork provides CIGAR-aware lookup and `umicount --stranded`.
+- Configure UMITE through the verbatim strings `umiextract_args` and `umicount_args`; reject options the workflow supplies itself (inputs, outputs, logs, cores, GTF options, `--combine_unspliced`).
+- Resolve `umicount --stranded` (`no`, `umi`, `yes`, `reverse`; default `umi`) during config normalization, and pass the same mode to the GTF dump and to counting; the mode names the dump because UMITE refuses a mismatched one.
 - Keep Methscan input/output paths and threads controlled by the workflow; preparation uses `--input-format biscuit_short` for BISCUIT BED input.
 - Legacy dataset names, sample names, and FASTQ IDs use only letters, digits, underscores, dots, and hyphens; batch IDs are stricter (letters, digits, underscores only). Sample names containing spaces remain unsupported.
 

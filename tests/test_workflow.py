@@ -1,5 +1,6 @@
 """Exercise Snakemake's real DAG builder without running the aligners."""
 
+import gzip
 from pathlib import Path
 import shlex
 import shutil
@@ -12,6 +13,16 @@ import yaml
 
 
 REPO = Path(__file__).resolve().parents[1]
+
+
+FIXTURE_READ_LENGTH = 50
+
+
+def write_fastq(path, read_length=FIXTURE_READ_LENGTH):
+    """Placeholder reads must be readable: --sjdbOverhang is derived from them."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(path, "wt") as handle:
+        handle.write(f"@fixture\n{'A' * read_length}\n+\n{'I' * read_length}\n")
 
 
 class WorkflowDryRunTests(unittest.TestCase):
@@ -48,7 +59,7 @@ class WorkflowDryRunTests(unittest.TestCase):
                 directory = fastq if modality == "cDNA" else fastq / fqid / "fastq"
                 directory.mkdir(parents=True, exist_ok=True)
                 for read in (1, 2):
-                    (directory / f"{fqid}_R{read}.fastq.gz").touch()
+                    write_fastq(directory / f"{fqid}_R{read}.fastq.gz")
             (fastq / "qc.csv").write_text("facility sidecar,not sample metadata\n")
 
     def dry_run(self, modality, pipeline, reference=None, cli=(), **overrides):
@@ -96,13 +107,17 @@ class WorkflowDryRunTests(unittest.TestCase):
                 else:
                     self.assertNotIn("gDNA_", output)
                     self.assertNotIn("cell_stats.png", output)
-                # Every declared generated file and log must live below results/.
+                # Every declared generated file and log must live below results/,
+                # except the shared STAR index, which is generated beside the genome.
+                index_dir = Path(self.reference["genome"]).parent / "star_index"
                 for line in output.splitlines():
                     if line.startswith(("    output: ", "    log: ")):
                         paths = line.split(": ", 1)[1].split(", ")
                         for path in paths:
                             self.assertTrue(
-                                Path(path).is_relative_to(self.root / "results"), line
+                                Path(path).is_relative_to(self.root / "results")
+                                or Path(path).is_relative_to(index_dir),
+                                line,
                             )
 
     def test_modern_facility_metadata_builds_gdna_and_both_dags(self):
@@ -248,6 +263,20 @@ class WorkflowDryRunTests(unittest.TestCase):
         output = self.dry_run("cDNA", "star_umite")
         self.assertIn("cDNA_align_to_ref", output)
         self.assertNotIn("gDNA_", output)
+
+    def test_umicount_strand_mode_reaches_the_gtf_dump(self):
+        # umicount refuses a dump parsed under a different --stranded mode, so
+        # the mode has to name the dump and be passed to both rules.
+        shutil.rmtree(self.root / "data" / "gDNA")
+        for mode, arguments in (("no", "--UMI_correct"),
+                                ("reverse", "--UMI_correct --stranded reverse")):
+            with self.subTest(mode=mode):
+                output = self.dry_run("cDNA", "star_umite", umicount_args=arguments)
+                dump = f"results/cDNA/reference/umicount_GTF_dump.{mode}.pkl"
+                self.assertIn(f"--GTF_dump {self.root / dump} --stranded {mode}", output)
+                self.assertIn(f"--GTF_skip_parse {self.root / dump}", output)
+                if mode != "no":
+                    self.assertIn(f"--stranded {mode} \\\n            --combine_unspliced", output)
 
     def test_cli_modality_overrides_config_file(self):
         output = self.dry_run("cDNA", "star_umite", cli=("--config", "modality=both"))

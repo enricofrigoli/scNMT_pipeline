@@ -1,5 +1,7 @@
 name: star
 channels:
+  - conda-forge
   - bioconda
 dependencies:
   - star=2.7
+  - samtools=1.23  # sort_bam_by_query_name and the shared-memory cleanup run in this env.

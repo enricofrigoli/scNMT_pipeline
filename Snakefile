@@ -1,11 +1,17 @@
 from datetime import datetime
 import hashlib
 from pathlib import Path
+import re
 
 import yaml
 from snakemake.utils import min_version
 
-from workflow_config import normalize_run_config, prepare_batch_configs, prepare_modality_config
+from workflow_config import (
+    STAR_INDEX_FILES,
+    normalize_run_config,
+    prepare_batch_configs,
+    prepare_modality_config,
+)
 
 
 min_version("9.19")
@@ -18,6 +24,7 @@ batch_configs = prepare_batch_configs(config, workflow.basedir)
 
 layer_configs = {}
 star_cleanup_groups = {}
+star_index_builds = {}
 all_outputs = []
 for batch, batch_config in batch_configs.items():
     modalities = ("cDNA", "gDNA") if batch_config["modality"] == "both" else (batch_config["modality"],)
@@ -48,6 +55,62 @@ for batch, batch_config in batch_configs.items():
                 str(Path(layer["outdir"]) / f"star_alignments/{sample}/{sample}_Aligned.out.bam")
                 for sample in layer["sample_to_fqid"]
             )
+            if not layer["star_index_generated"]:
+                continue
+            # One generated index per genome, so every batch sharing it must agree.
+            layer_name = f"{batch or layer['dataset']}/{modality}"
+            settings = {
+                "genome": layer["reference"]["genome"],
+                "genes": layer["reference"]["genes"],
+                "index_args": layer["star_index_args"],
+            }
+            build = star_index_builds.setdefault(
+                index_dir, {**settings, "overhang": 0, "layers": []}
+            )
+            conflicting = sorted(key for key, value in settings.items() if build[key] != value)
+            if conflicting:
+                raise ValueError(
+                    f"{index_dir} would be generated with different "
+                    f"{', '.join(conflicting)} by {build['layers'][0]} and {layer_name}; "
+                    "supply reference.star_index per batch to keep separate indexes"
+                )
+            # STAR recommends max(read length) - 1 across everything using the index.
+            build["overhang"] = max(build["overhang"], layer["star_sjdb_overhang"])
+            build["layers"].append(layer_name)
+
+
+if star_index_builds:
+    rule generate_star_index:
+        input:
+            ref_genome = lambda wildcards: ancient(star_index_builds[wildcards.index_dir]["genome"]),
+            gene_annotation = lambda wildcards: ancient(star_index_builds[wildcards.index_dir]["genes"])
+        output:
+            multiext("{index_dir}/", *STAR_INDEX_FILES)
+        params:
+            star_args = lambda wildcards: star_index_builds[wildcards.index_dir]["index_args"],
+            overhang = lambda wildcards: star_index_builds[wildcards.index_dir]["overhang"],
+            outprefix = "{index_dir}/star_genome_generate_"
+        log:
+            # Kept beside the index: the log must carry the output's wildcards, and
+            # two genomes generating indexes would otherwise share one log path.
+            "{index_dir}/star_genome_generate.log"
+        wildcard_constraints:
+            index_dir = "|".join(re.escape(index_dir) for index_dir in star_index_builds)
+        threads: workflow.cores
+        conda: "envs/star.yaml"
+        shell:
+            r'''
+            STAR \
+                {params.star_args} \
+                --runThreadN {threads} \
+                --runMode genomeGenerate \
+                --genomeDir {wildcards.index_dir:q} \
+                --genomeFastaFiles {input.ref_genome:q} \
+                --sjdbGTFfile {input.gene_annotation:q} \
+                --sjdbOverhang {params.overhang} \
+                --outFileNamePrefix {params.outprefix:q} \
+                > {log:q} 2>&1
+            '''
 
 
 if star_cleanup_groups:

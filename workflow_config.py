@@ -3,6 +3,8 @@
 from collections import defaultdict
 from copy import deepcopy
 from pathlib import Path
+import gzip
+import os
 import re
 import shlex
 
@@ -12,15 +14,21 @@ import pandas as pd
 MODALITIES = ("cDNA", "gDNA")
 PIPELINES = ("star_umite", "biscuit_methscan")
 METHSCAN_STEPS = ("prepare", "filter", "smooth", "scan", "matrix")
+# umicount --stranded modes; "umi" strand-resolves only the UMI-containing
+# readpairs, since SmartSeq3 internal fragments are not strand-specific.
+UMICOUNT_STRAND_MODES = ("no", "umi", "yes", "reverse")
 METADATA_EXTENSIONS = (".xls", ".xlsx", ".csv", ".tsv")
 STAR_INDEX_FILES = ("Genome", "SA", "SAindex", "genomeParameters.txt")
 BISCUIT_INDEX_SUFFIXES = (
     ".bis.amb", ".bis.ann", ".bis.pac", ".dau.bwt", ".dau.sa", ".par.bwt", ".par.sa",
 )
+STAR_INDEX_DIRNAME = "star_index"
+READ_LENGTH_SAMPLE_FILES = 8
+READ_LENGTH_SAMPLE_RECORDS = 1000
 BATCH_OPTIONS = {
     "modality", "samples", "reference", "ilse_info",
     "umiextract_args", "umicount_args", "star_index_args", "star_align_args",
-    "biscuit_index_alg", "biscuit_align_args",
+    "biscuit_index_alg", "biscuit_align_args", "biscuit_pileup_args",
     *(f"methscan_{step}_args" for step in METHSCAN_STEPS),
 }
 
@@ -102,6 +110,8 @@ def normalize_config(raw_config: dict, base_dir: str | Path) -> dict:
 
     if "gDNA" in selected:
         config["methscan_filter_cell_names"] = validate_methscan_args(config)
+    if "cDNA" in selected:
+        config["umicount_stranded"] = validate_umicount_args(config)
 
     ilse_info = config.get("ilse_info") or {}
     if not isinstance(ilse_info, dict):
@@ -124,6 +134,45 @@ def validate_index_files(paths: list[Path], label: str) -> None:
     missing = [str(path) for path in paths if not path.is_file()]
     if missing:
         raise ValueError(f"{label} is missing index files: {', '.join(missing)}")
+
+
+def shared_star_index_dir(genome: str) -> str:
+    """Generate one index per genome instead of one per batch."""
+    genome_dir = Path(genome).resolve().parent
+    if not os.access(genome_dir, os.W_OK):
+        raise ValueError(
+            "cannot generate a STAR index beside a read-only reference genome: "
+            f"{genome_dir}. Supply reference.star_index to reuse an existing index."
+        )
+    return str(genome_dir / STAR_INDEX_DIRNAME)
+
+
+def detect_read_length(fastq: str, max_records: int = READ_LENGTH_SAMPLE_RECORDS) -> int:
+    """Measure the longest read among the leading records of one gzipped FASTQ."""
+    longest = 0
+    with gzip.open(fastq, "rt") as handle:
+        for index, line in enumerate(handle):
+            if index >= max_records * 4:
+                break
+            if index % 4 == 1:
+                longest = max(longest, len(line.strip()))
+    return longest
+
+
+def detect_sjdb_overhang(fqid_to_reads: dict, modality: str) -> int:
+    """Apply STAR's max(read length) - 1 guidance by sampling a few read pairs."""
+    fqids = sorted(fqid_to_reads)
+    step = max(1, len(fqids) // READ_LENGTH_SAMPLE_FILES)
+    longest = 0
+    for fqid in fqids[::step][:READ_LENGTH_SAMPLE_FILES]:
+        for read in ("read1", "read2"):
+            longest = max(longest, detect_read_length(fqid_to_reads[fqid][read]))
+    if longest < 2:
+        raise ValueError(
+            f"{modality}: could not measure a read length from the FASTQ files, so "
+            "--sjdbOverhang is unknown; supply reference.star_index to skip generation"
+        )
+    return longest - 1
 
 
 def normalize_run_config(raw_config: dict, base_dir: str | Path) -> dict:
@@ -192,6 +241,60 @@ def prepare_batch_configs(config: dict, base_dir: str | Path) -> dict:
         except ValueError as exc:
             raise ValueError(f"Batch {batch}: {exc}") from exc
     return batch_configs
+
+
+def validate_umicount_args(config: dict) -> str:
+    """Validate counting options and resolve the strand mode shared with the GTF dump."""
+    value = config.get("umicount_args", "")
+    if not isinstance(value, str):
+        raise ValueError(
+            'umicount_args must be a string of command-line options; '
+            'use "" for no extra options'
+        )
+    try:
+        tokens = shlex.split(value)
+    except ValueError as exc:
+        raise ValueError(f"Invalid quoting in umicount_args: {exc}") from exc
+
+    # The workflow supplies these itself, from the rule's inputs and outputs.
+    reserved = {
+        "-f": "--bams is built from the aligned BAMs",
+        "--bams": "--bams is built from the aligned BAMs",
+        "-d": "the output directory is fixed by the rule",
+        "--output_dir": "the output directory is fixed by the rule",
+        "-c": "cores come from the Snakemake thread allocation",
+        "--cores": "cores come from the Snakemake thread allocation",
+        "-l": "the log path is fixed by the rule",
+        "--logfile": "the log path is fixed by the rule",
+        "-g": "the GTF comes from reference.genes",
+        "--gtf": "the GTF comes from reference.genes",
+        "--GTF_dump": "the dump is written by the parse_dump_GTF rule",
+        "--GTF_skip_parse": "the dump is read from the parse_dump_GTF rule",
+        "--combine_unspliced": "the rule always combines spliced and unspliced UMIs",
+        "--no_dedup": "the workflow requires deduplicated UMI and duplicate-count matrices",
+    }
+    stranded = "no"
+    for index, token in enumerate(tokens):
+        flag, separator, inline = token.partition("=")
+        if flag in reserved:
+            raise ValueError(f"umicount_args cannot use {flag}: {reserved[flag]}")
+        if flag != "--stranded":
+            continue
+        if separator:
+            stranded = inline
+        elif index + 1 == len(tokens) or tokens[index + 1].startswith("-"):
+            raise ValueError(
+                "umicount_args --stranded requires a mode: "
+                f"{', '.join(UMICOUNT_STRAND_MODES)}"
+            )
+        else:
+            stranded = tokens[index + 1]
+        if stranded not in UMICOUNT_STRAND_MODES:
+            raise ValueError(
+                f"umicount_args --stranded must be one of "
+                f"{', '.join(UMICOUNT_STRAND_MODES)}: {stranded}"
+            )
+    return stranded
 
 
 def validate_methscan_args(config: dict) -> list[str]:
@@ -360,12 +463,12 @@ def prepare_modality_config(config: dict, modality: str) -> dict:
     reference_dir = Path(layer_config["outdir"]) / "reference"
     if modality == "cDNA":
         external_index = config["reference"].get("star_index")
-        index_dir = external_index or str(reference_dir / "star_index")
+        index_dir = external_index or shared_star_index_dir(config["reference"]["genome"])
         layer_config["star_index_dir"] = index_dir
-        layer_config["star_index_inputs"] = (
-            [str(Path(index_dir) / name) for name in STAR_INDEX_FILES]
-            if external_index else [index_dir]
-        )
+        layer_config["star_index_generated"] = external_index is None
+        layer_config["star_index_inputs"] = [
+            str(Path(index_dir) / name) for name in STAR_INDEX_FILES
+        ]
     else:
         external_index = config["reference"].get("biscuit_index")
         index_dir = reference_dir / "biscuit_index"
@@ -432,4 +535,6 @@ def prepare_modality_config(config: dict, modality: str) -> dict:
         )
     layer_config["sample_to_fqid"] = dict(sample_to_fqid)
     layer_config["fqid_to_reads"] = fqid_to_reads
+    if layer_config.get("star_index_generated"):
+        layer_config["star_sjdb_overhang"] = detect_sjdb_overhang(fqid_to_reads, modality)
     return layer_config

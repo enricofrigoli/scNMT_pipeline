@@ -140,7 +140,13 @@ Supply either or both index settings to reuse existing indexes and skip the corr
 | `reference.star_index` | Absolute directory containing `Genome`, `SA`, `SAindex`, and `genomeParameters.txt`. |
 | `reference.biscuit_index` | Absolute prefix whose files have suffixes `.bis.amb`, `.bis.ann`, `.bis.pac`, `.dau.bwt`, `.dau.sa`, `.par.bwt`, and `.par.sa`. For `/refs/biscuit/genome`, one required file is `/refs/biscuit/genome.bis.amb`. |
 
-Use indexes compatible with the aligner version and reference genome/annotation for the batch. Validation checks that the required files exist; it cannot verify that compatibility. If an index setting is omitted, the workflow builds that index under the corresponding batch's `results/<batch>/<modality>/reference/` directory. Multiple batches may share supplied indexes. STAR shared-memory cleanup waits for all alignments using the same index and does not make an existing batch's counting depend on a newly added batch.
+Use indexes compatible with the aligner version and reference genome/annotation for the batch. Validation checks that the required files exist; it cannot verify that compatibility. Multiple batches may share supplied indexes. STAR shared-memory cleanup waits for all alignments using the same index and does not make an existing batch's counting depend on a newly added batch.
+
+If `reference.star_index` is omitted, the workflow generates one shared index in a `star_index` folder beside `reference.genome`, together with its `star_genome_generate.log`. That folder must be writable. Every cDNA batch using the same genome reuses that one index instead of generating a copy per batch, so batches sharing a genome must also agree on `reference.genes` and `star_index_args`.
+
+`--sjdbOverhang` is not configured by hand. The workflow samples the leading reads of a few FASTQ pairs per cDNA batch and uses the longest read length minus one, as STAR recommends. When several batches share a generated index, the longest read across all of them sets the value. Adding a batch with longer reads therefore regenerates the shared index; supply `reference.star_index` to pin an existing one instead.
+
+If `reference.biscuit_index` is omitted, that index is still generated per batch under `results/<batch>/gDNA/reference/`.
 
 ### Batch overrides and resequencing
 
@@ -175,6 +181,37 @@ The earlier configuration remains supported when `batches` is absent: use top-le
 
 In this mode, if `modality` is omitted, `pipeline: star_umite` selects cDNA and `pipeline: biscuit_methscan` selects gDNA. Flat `ilse_info.metadata` and `ilse_info.fastqdir` fields remain valid for a single modality; `both` uses nested `ilse_info.cDNA` and `ilse_info.gDNA` sections. Set `pipeline: star_umite` for cDNA or both. Shared index settings are supported in this mode too.
 
+## UMITE configuration
+
+cDNA counting uses [UMITE](https://github.com/enricofrigoli/umite), installed from that repository at the commit pinned in `envs/umite.yaml` rather than from PyPI. The fork adds CIGAR-aware feature lookup, so a spliced read no longer overlaps features inside the intron it spans, and strand-resolved counting through `umicount --stranded`. Change the pinned commit in that file to move to a newer revision; the conda environment is rebuilt on the next run.
+
+`umiextract_args` and `umicount_args` are passed to their commands verbatim, so replace the whole string when changing an option. For `umicount_args`, the workflow supplies the inputs, outputs, log paths, cores, GTF options, and `--combine_unspliced` itself, and rejects a configuration that repeats any of them. `--no_dedup` is unsupported because the workflow requires deduplicated UMI counts and the duplicate-count matrix.
+
+The pipeline's default `umicount_args` includes `--stranded umi`. UMITE itself defaults to `no` when you replace this string and omit `--stranded`. Configure it globally or inside a batch:
+
+```yaml
+umicount_args: >-
+  --mm_count_primary
+  --UMI_correct
+  --stranded umi
+```
+
+The supported modes are:
+
+- `umi` resolves the strand of UMI-containing readpairs only. SmartSeq3 internal fragments carry no strand information, only the TSO-marked readpairs do, so this is the recommended mode.
+- `no` ignores strand entirely. Other fixes in the fork, including CIGAR-aware overlap, can still change counts relative to the PyPI release.
+- `yes` and `reverse` treat every readpair as stranded, with R1 or R2 as the sense mate.
+
+UMITE stores the parsed annotation per strand only when reads will query it by strand, and refuses a dump whose mode differs from `--stranded`. The mode therefore names the dump, `results/<batch>/cDNA/reference/umicount_GTF_dump.<mode>.pkl`, and changing it parses the GTF again instead of failing.
+
+The fork also replaces the old tuple pickle with a version 2 dictionary containing `version`, `stranded`, and `gtf_data`. The H5AD converter reads this format. The new cache filenames avoid reusing old `umicount_GTF_dump.pkl` files; leave Snakemake's default rerun triggers enabled when migrating.
+
+Preview the migration with `snakemake -n --cores 4 --sdm conda`. Changing `envs/umite.yaml` also changes the environment used by UMI extraction, so Snakemake can schedule extraction, alignment, and downstream counting again for existing cells. Create the environments without processing data using `snakemake --cores 1 --sdm conda --conda-create-envs-only`.
+
+## BISCUIT configuration
+
+`biscuit_pileup_args` defaults to `-p`, which keeps reads flagged as an improper pair. BISCUIT discards them by default, and post-bisulfite libraries produce many of them. NOMe-seq mode (`-N`) is always added by the workflow because HCG/GCH extraction depends on it, so leave it out of this string.
+
 ## Methscan configuration
 
 Methscan options for gDNA are configured through five option strings in `snakeconfig.yaml`. Set them at the top level for all batches or inside a batch to override its settings. Copy and edit the defaults below to override `defaultconfig.yaml`:
@@ -202,7 +239,7 @@ Each batch and modality writes its intermediate files, logs, and final matrix to
 - cDNA: `results/<batch>/cDNA/<batch>.star_umite.h5ad`.
 - gDNA: `results/<batch>/gDNA/<batch>.biscuit_methscan.h5ad`.
 
-Generated reference artifacts are stored in `results/<batch>/<modality>/reference/`; supplied indexes are reused at their configured locations. A batch with both modalities produces two independent matrices for subsequent manual cell matching.
+Generated reference artifacts are stored in `results/<batch>/<modality>/reference/`, except the shared STAR index described above, which is generated beside `reference.genome`. Supplied indexes are reused at their configured locations. A batch with both modalities produces two independent matrices for subsequent manual cell matching.
 
 The `star_umite` branch pools exonic and intronic UMI evidence for each gene before UMI correction and deduplication (`--combine_unspliced`). The final H5AD uses `umicount/umite.U.tsv`, containing combined deduplicated UMI counts. Non-UMI internal fragment counts (`umite.R.tsv`) and duplicate counts (`umite.D.tsv`) remain separate TSV outputs.
 

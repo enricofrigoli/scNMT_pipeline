@@ -2,6 +2,7 @@
 
 import copy
 import csv
+import gzip
 from pathlib import Path
 import sys
 import tempfile
@@ -10,6 +11,16 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from workflow_config import normalize_config, prepare_modality_config, read_metadata
+
+
+FIXTURE_READ_LENGTH = 50
+
+
+def write_fastq(path, read_length=FIXTURE_READ_LENGTH):
+    """Placeholder reads must be readable: --sjdbOverhang is derived from them."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(path, "wt") as handle:
+        handle.write(f"@fixture\n{'A' * read_length}\n+\n{'I' * read_length}\n")
 
 
 class WorkflowConfigTests(unittest.TestCase):
@@ -41,7 +52,7 @@ class WorkflowConfigTests(unittest.TestCase):
         paths = {}
         for read in (1, 2):
             path = directory / f"{fqid}_R{read}.fastq.gz"
-            path.touch()
+            write_fastq(path)
             paths[f"read{read}"] = str(path)
         return paths
 
@@ -445,6 +456,48 @@ class WorkflowConfigTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "cell.names"):
                         self.normalized(modality=modality, methscan_filter_args=arguments)
         self.normalized(modality="cDNA", methscan_filter_args="--cell-names /missing.txt")
+
+    def test_umicount_strand_mode_is_resolved_for_selected_cdna(self):
+        for modality in ("cDNA", "both"):
+            for separator in (" ", "="):
+                for mode in ("no", "umi", "yes", "reverse"):
+                    with self.subTest(modality=modality, separator=separator, mode=mode):
+                        arguments = f"--UMI_correct --stranded{separator}{mode}"
+                        config = self.normalized(
+                            modality=modality, umicount_args=arguments
+                        )
+                        self.assertEqual(config["umicount_stranded"], mode)
+                        self.assertEqual(config["umicount_args"], arguments)
+        # The GTF dump has to be parsed the same way, and umicount defaults to
+        # ignoring strand when the option is left out.
+        self.assertEqual(
+            self.normalized(modality="cDNA", umicount_args="--UMI_correct")["umicount_stranded"],
+            "no",
+        )
+        self.assertNotIn("umicount_stranded", self.normalized(modality="gDNA"))
+
+    def test_invalid_umicount_arguments_fail_for_selected_cdna(self):
+        invalid = {
+            "--stranded": "stranded",
+            "--stranded=": "stranded",
+            "--stranded= umi": "stranded",
+            "--stranded invalid --stranded umi": "stranded",
+            "--stranded --UMI_correct": "stranded",
+            "--stranded strand": "stranded",
+            "--stranded=both": "stranded",
+            "--GTF_skip_parse /dump.pkl": "GTF_skip_parse",
+            "--bams /a.bam": "bams",
+            "-d /elsewhere": "-d",
+            "--combine_unspliced": "combine_unspliced",
+            "--no_dedup": "no_dedup",
+            "--anchor 'unclosed": "quoting",
+        }
+        for modality in ("cDNA", "both"):
+            for arguments, message in invalid.items():
+                with self.subTest(modality=modality, arguments=arguments):
+                    with self.assertRaisesRegex(ValueError, message):
+                        self.normalized(modality=modality, umicount_args=arguments)
+        self.normalized(modality="gDNA", umicount_args="--stranded nonsense")
 
     def test_normalization_preserves_unknown_keys_and_original_config(self):
         original = copy.deepcopy(self.config)

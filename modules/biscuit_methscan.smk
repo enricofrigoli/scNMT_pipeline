@@ -128,11 +128,13 @@ rule extract_variants:
         fai = ancient(rules.prepare_biscuit_reference.output.fai)
     output:
         temp(join(config['outdir'], 'biscuit/{sample}/{sample}_variants.vcf.bgz'))
+    params:
+        biscuit_args = config['biscuit_pileup_args']
     log: join(config['outdir'], 'biscuit/{sample}/{sample}.biscuit_pileup.log')
     threads: min(4, workflow.cores)
     conda: '../envs/biscuit.yaml'
     shell:
-        'biscuit pileup -@ {threads} -N {input.ref_genome} {input.bam} 2> {log} | bgzip -@ {threads} -o {output}'
+        'biscuit pileup -@ {threads} -N {params.biscuit_args} {input.ref_genome} {input.bam} 2> {log} | bgzip -@ {threads} -o {output}'
 
 
 rule extract_methylation:

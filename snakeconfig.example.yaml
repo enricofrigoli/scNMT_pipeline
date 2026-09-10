@@ -2,7 +2,8 @@
 reference:
   genome: /absolute/path/to/genome.fa
   genes: /absolute/path/to/annotation.gtf  # Required for cDNA.
-  # Reuse existing indexes. Omit these keys to build indexes within each batch.
+  # Reuse existing indexes. Omit star_index to generate one shared index in
+  # star_index/ beside the genome; omit biscuit_index to build it per batch.
   star_index: /absolute/path/to/star_index  # Directory.
   biscuit_index: /absolute/path/to/biscuit/genome  # File prefix, not a directory.
 
@@ -34,6 +35,14 @@ batches:
 #       samples: []  # Override the batch filter to include all gDNA cells.
 # Without overrides, discover tables in data/<batch>/<modality>/ and FASTQs
 # in its fastq/ folder. Resequencing combines exact sample names within a batch.
+
+# Optional UMITE settings apply to all batches here, or inside one cDNA batch.
+# Replace the whole string. umi resolves strands only for UMI-containing pairs;
+# no ignores strand, yes uses R1 as sense for all pairs, reverse uses R2.
+# umicount_args: >-
+#   --mm_count_primary
+#   --UMI_correct
+#   --stranded umi
 
 # Optional Methscan settings apply to all batches here, or can be placed inside
 # one batch to override its settings. Uncomment and edit a complete option string.
