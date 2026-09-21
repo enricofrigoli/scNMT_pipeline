@@ -45,9 +45,15 @@ rule trim_adaptors:
         read2 = ancient(lambda wildcards: fqid_to_reads[wildcards.fqid]['read2'])
     output:
         read1 = temp(join(config['outdir'], 'biscuit/{sample}/{fqid}_R1_val_1.fq.gz')),
-        read2 = temp(join(config['outdir'], 'biscuit/{sample}/{fqid}_R2_val_2.fq.gz'))
+        read2 = temp(join(config['outdir'], 'biscuit/{sample}/{fqid}_R2_val_2.fq.gz')),
+        report1 = join(config['outdir'], 'biscuit/{sample}/{fqid}_R1.fastq.gz_trimming_report.txt'),
+        report2 = join(config['outdir'], 'biscuit/{sample}/{fqid}_R2.fastq.gz_trimming_report.txt')
     params:
         outdir = join(config['outdir'], 'biscuit/{sample}')
+    threads: 2
+    resources:
+        mem_mb=4000,
+        walltime=120
     log: join(config['outdir'], 'biscuit/{sample}/{fqid}.trim_galore.log')
     conda: '../envs/biscuit.yaml'
     shell:
@@ -92,11 +98,12 @@ rule deduplicate_and_sort_bam:
         ref_genome = ancient(rules.prepare_biscuit_reference.output.genome),
         fai = ancient(rules.prepare_biscuit_reference.output.fai)
     output:
-        join(config['outdir'], 'biscuit/{sample}/{sample}.dedup_sorted.bam')
-    log: join(config['outdir'], 'biscuit/{sample}/{sample}.dupsifter.stat')
+        bam = join(config['outdir'], 'biscuit/{sample}/{sample}.dedup_sorted.bam'),
+        stats = join(config['outdir'], 'biscuit/{sample}/{sample}.dupsifter.stat')
+    log: join(config['outdir'], 'biscuit/{sample}/{sample}.dupsifter.log')
     conda: '../envs/biscuit.yaml'
     shell:
-        'dupsifter {input.ref_genome} {input.bam} -O {log} | samtools sort -o {output}'
+        'dupsifter {input.ref_genome} {input.bam} -O {output.stats} 2> {log} | samtools sort -o {output.bam}'
 
 
 # merging is needed when one sample has multiple FASTQ IDs (e.g. when resequenced)
@@ -122,24 +129,26 @@ rule index_bam:
 
 rule extract_variants:
     input:
-        bam = rules.deduplicate_and_sort_bam.output,
-        bai = rules.deduplicate_and_sort_bam.output[0] + '.bai',
+        bam = rules.deduplicate_and_sort_bam.output.bam,
+        bai = rules.deduplicate_and_sort_bam.output.bam + '.bai',
         ref_genome = ancient(rules.prepare_biscuit_reference.output.genome),
         fai = ancient(rules.prepare_biscuit_reference.output.fai)
     output:
-        temp(join(config['outdir'], 'biscuit/{sample}/{sample}_variants.vcf.bgz'))
+        vcf = temp(join(config['outdir'], 'biscuit/{sample}/{sample}_variants.vcf.bgz')),
+        meth_average = join(config['outdir'], 'biscuit/{sample}/{sample}_meth_average.tsv')
     params:
-        biscuit_args = config['biscuit_pileup_args']
+        biscuit_args = config['biscuit_pileup_args'],
+        stats_prefix = join(config['outdir'], 'biscuit/{sample}/{sample}')
     log: join(config['outdir'], 'biscuit/{sample}/{sample}.biscuit_pileup.log')
     threads: min(4, workflow.cores)
     conda: '../envs/biscuit.yaml'
     shell:
-        'biscuit pileup -@ {threads} -N {params.biscuit_args} {input.ref_genome} {input.bam} 2> {log} | bgzip -@ {threads} -o {output}'
+        'biscuit pileup -@ {threads} -N -w {params.stats_prefix:q} {params.biscuit_args} {input.ref_genome} {input.bam} 2> {log} | bgzip -@ {threads} -o {output.vcf}'
 
 
 rule extract_methylation:
     input:
-        rules.extract_variants.output
+        rules.extract_variants.output.vcf
     output:
         hcg = join(config['outdir'], 'biscuit/{sample}/{sample}_HCG.bed'),
         gch = join(config['outdir'], 'biscuit/{sample}/{sample}_GCH.bed')
@@ -168,17 +177,6 @@ rule prepare_methscan_data_and_rename_columns:
         cell_stats['cell_name'] = cell_stats['cell_name'].str.removesuffix('_HCG')
         cell_stats['cell_name'].to_csv(join(str(output), 'column_header.txt'), header=False, index=False)
         cell_stats.to_csv(join(str(output), 'cell_stats.csv'), index=False)
-
-
-rule plot_methscan_cell_stats:
-    input:
-        data_dir = rules.prepare_methscan_data_and_rename_columns.output,
-        plot_script = workflow.source_path('../scripts/plot_methscan_cell_stats.py')
-    output:
-        join(config['outdir'], 'qc_plots/cell_stats.png')
-    conda: '../envs/plotting.yaml'
-    shell:
-        'python3 {input.plot_script:q} {input.data_dir:q}/cell_stats.csv -o {output:q}'
 
 
 rule filter_methscan_data:

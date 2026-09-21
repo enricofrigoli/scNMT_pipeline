@@ -1,0 +1,28 @@
+# Shared MultiQC settings for the scNMT QC reports.
+# One report is written per batch and modality; cells are never matched across
+# modalities, so their sample name sets are deliberately disjoint.
+
+# STAR writes <cell>_Log.final.out, so MultiQC's default filename cleaning
+# already recovers the cell name. Prepending directories would repeat it,
+# because each cell's directory is named after the cell.
+prepend_dirs: false
+use_filename_as_sample_name: false
+
+# Re-running the workflow should not churn the report.
+show_analysis_paths: false
+show_analysis_time: false
+
+# A plate is 384 cells, which is above several of MultiQC's interactive-plot
+# thresholds. Pin them so behaviour does not depend on the installed version.
+max_table_rows: 1000
+plots_flat_numseries: 2000
+plots_defer_loading_numseries: 500
+
+# results/ also holds BAMs, FASTQs and indexes; never walk into them.
+fn_ignore_dirs:
+  - star_index
+  - biscuit_index
+  - .snakemake
+
+# The merged per-cell tables are self-describing custom content: MultiQC finds
+# them by the _mqc.tsv suffix and reads their commented header for the layout.

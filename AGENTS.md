@@ -59,6 +59,12 @@ Repository guide for agentic coding in this project.
 - Configure UMITE through the verbatim strings `umiextract_args` and `umicount_args`; reject options the workflow supplies itself (inputs, outputs, logs, cores, GTF options, `--combine_unspliced`).
 - Resolve `umicount --stranded` (`no`, `umi`, `yes`, `reverse`; default `umi`) during config normalization, and pass the same mode to the GTF dump and to counting; the mode names the dump because UMITE refuses a mismatched one.
 - Keep Methscan input/output paths and threads controlled by the workflow; preparation uses `--input-format biscuit_short` for BISCUIT BED input.
+- QC is opt-in through `generate_QC_plots`; it defaults to false and every QC rule must stay additive, reading only files the core rules already produce.
+- Keep QC rules in `modules/qc_<pipeline>.smk`, included conditionally from `modules/modality.smk`; do not add QC rules to the core pipeline modules.
+- QC outputs live under `results/<batch>/<modality>/qc/`; one MultiQC report per batch and modality, never one combining both.
+- Measure bisulfite conversion from HCH, not CpH: the NOMe-seq GpC label inflates any CpH-based estimate. `biscuit pileup -N -w` reports HCH per chromosome.
+- `reference.profile_regions` maps identifier-safe names to stranded BED files; names become wildcards, path components and plot titles.
+- Profile QC regions from unfiltered Methscan data, because these plots exist to reveal the cells filtering would drop. GpC uses its own `compact_data_GpC`, and CpG filter thresholds must never be reused for it.
 - Legacy dataset names, sample names, and FASTQ IDs use only letters, digits, underscores, dots, and hyphens; batch IDs are stricter (letters, digits, underscores only). Sample names containing spaces remain unsupported.
 
 ## Code Style

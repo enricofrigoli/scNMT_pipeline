@@ -8,6 +8,11 @@
 # cDNA uses star_umite; gDNA uses biscuit_methscan. For both, use star_umite.
 pipeline: star_umite
 
+# Opt-in QC. When true, each batch also produces reports and plots under
+# results/<batch>/<modality>/qc/. Can be overridden inside a single batch.
+# gDNA QC profiles the regions listed in reference.profile_regions; see below.
+generate_QC_plots: false
+
 # Input/output roots default to data/ and results/ beside Snakefile.
 # Optional datadir and outdir overrides in snakeconfig.yaml must be absolute.
 # Batch metadata is discovered in data/<batch>/<modality>/ and reads in fastq/.
@@ -99,3 +104,8 @@ methscan_smooth_args: ""
 methscan_scan_args: ""
 # --sparse is unsupported: H5AD conversion requires CSV matrix output.
 methscan_matrix_args: ""
+# QC profiles only. --strand-column is 1-indexed and orients each region by its
+# BED strand column, so upstream and downstream are not averaged together.
+# --width sets the full window; the default 4000 profiles 2 kb either side.
+methscan_profile_args: >-
+  --strand-column 6

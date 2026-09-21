@@ -13,7 +13,7 @@ import pandas as pd
 
 MODALITIES = ("cDNA", "gDNA")
 PIPELINES = ("star_umite", "biscuit_methscan")
-METHSCAN_STEPS = ("prepare", "filter", "smooth", "scan", "matrix")
+METHSCAN_STEPS = ("prepare", "filter", "smooth", "scan", "matrix", "profile")
 # umicount --stranded modes; "umi" strand-resolves only the UMI-containing
 # readpairs, since SmartSeq3 internal fragments are not strand-specific.
 UMICOUNT_STRAND_MODES = ("no", "umi", "yes", "reverse")
@@ -29,6 +29,7 @@ BATCH_OPTIONS = {
     "modality", "samples", "reference", "ilse_info",
     "umiextract_args", "umicount_args", "star_index_args", "star_align_args",
     "biscuit_index_alg", "biscuit_align_args", "biscuit_pileup_args",
+    "generate_QC_plots",
     *(f"methscan_{step}_args" for step in METHSCAN_STEPS),
 }
 
@@ -77,6 +78,11 @@ def normalize_config(raw_config: dict, base_dir: str | Path) -> dict:
             "(also for modality: both)"
         )
 
+    generate_qc_plots = config.get("generate_QC_plots", False)
+    if not isinstance(generate_qc_plots, bool):
+        raise ValueError("generate_QC_plots must be true or false")
+    config["generate_QC_plots"] = generate_qc_plots
+
     base_dir = Path(base_dir).resolve()
     for key, default in (("datadir", "data"), ("outdir", "results")):
         config[key] = str(absolute_path(config.get(key, str(base_dir / default)), key))
@@ -93,6 +99,8 @@ def normalize_config(raw_config: dict, base_dir: str | Path) -> dict:
         path = absolute_path(reference.get(key), f"reference.{key}")
         if not path.is_file():
             raise ValueError(f"reference.{key} file does not exist: {path}")
+    if generate_qc_plots and "gDNA" in selected:
+        reference["profile_regions"] = validate_profile_regions(reference)
 
     if "cDNA" in selected and "star_index" in reference:
         index_dir = absolute_path(reference["star_index"], "reference.star_index").resolve()
@@ -134,6 +142,44 @@ def validate_index_files(paths: list[Path], label: str) -> None:
     missing = [str(path) for path in paths if not path.is_file()]
     if missing:
         raise ValueError(f"{label} is missing index files: {', '.join(missing)}")
+
+
+def validate_profile_regions(reference: dict) -> dict:
+    """Resolve the optional region files profiled for QC, keyed by plot name."""
+    regions = reference.get("profile_regions") or {}
+    if not isinstance(regions, dict):
+        raise ValueError(
+            "reference.profile_regions must be a mapping of names to BED files"
+        )
+    resolved = {}
+    for name, value in regions.items():
+        # The name becomes a wildcard, a path component and a plot title.
+        label = validate_identifier(str(name), "reference.profile_regions name")
+        path = absolute_path(value, f"reference.profile_regions.{label}")
+        if not path.is_file():
+            raise ValueError(
+                f"reference.profile_regions.{label} file does not exist: {path}"
+            )
+        resolved[label] = str(path)
+    return resolved
+
+
+def qc_targets(layer: dict, modality: str) -> list[str]:
+    """List the QC files a prepared layer produces when QC is enabled."""
+    qc_dir = Path(layer["outdir"]) / "qc"
+    targets = [
+        str(qc_dir / "multiqc/multiqc_report.html"),
+        str(qc_dir / f"tables/{layer['dataset']}.{modality}.per_cell_metrics_mqc.tsv"),
+    ]
+    if modality != "gDNA":
+        return targets
+    targets.append(str(qc_dir / "cell_stats.png"))
+    targets.append(str(qc_dir / "plate/plate_qc.png"))
+    regions = layer["reference"].get("profile_regions") or {}
+    targets.extend(
+        str(qc_dir / f"profiles/{region}_profiles.pdf") for region in regions
+    )
+    return targets
 
 
 def shared_star_index_dir(genome: str) -> str:

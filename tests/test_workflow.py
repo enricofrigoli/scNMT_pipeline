@@ -30,7 +30,9 @@ class WorkflowDryRunTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="scnmt-dag-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        for filename in ("Snakefile", "defaultconfig.yaml", "workflow_config.py"):
+        for filename in (
+            "Snakefile", "defaultconfig.yaml", "workflow_config.py", "multiqc_config.yaml",
+        ):
             shutil.copy2(REPO / filename, self.root / filename)
         for directory in ("modules", "envs", "scripts"):
             shutil.copytree(REPO / directory, self.root / directory)
@@ -98,15 +100,11 @@ class WorkflowDryRunTests(unittest.TestCase):
                     self.assertIn("data/gDNA/fastq/same-id/fastq/same-id_R1.fastq.gz", output)
                     self.assertIn("dna_only", output)
                     self.assertIn("gDNA_merge_trimmed_reads", output)
-                    self.assertIn("results/gDNA/qc_plots/cell_stats.png", output)
-                    self.assertIn("rule gDNA_plot_methscan_cell_stats:", output)
-                    plot_job = output.split("rule gDNA_plot_methscan_cell_stats:", 1)[1]
-                    plot_job = plot_job.split("\n\n", 1)[0]
-                    self.assertIn("methscan/compact_data/cell_stats.csv", plot_job)
-                    self.assertNotIn("methscan/filtered_data", plot_job)
                 else:
                     self.assertNotIn("gDNA_", output)
-                    self.assertNotIn("cell_stats.png", output)
+                # QC is opt-in, so nothing under qc/ belongs in the default DAG.
+                self.assertNotIn("/qc/", output)
+                self.assertNotIn("cell_stats.png", output)
                 # Every declared generated file and log must live below results/,
                 # except the shared STAR index, which is generated beside the genome.
                 index_dir = Path(self.reference["genome"]).parent / "star_index"
@@ -119,6 +117,59 @@ class WorkflowDryRunTests(unittest.TestCase):
                                 or Path(path).is_relative_to(index_dir),
                                 line,
                             )
+
+    def qc_reference(self):
+        """Add a region file so gDNA QC has something to profile."""
+        regions = self.root / "references" / "tss.bed"
+        regions.write_text("chr1\t100\t101\tregion\t.\t+\n")
+        return dict(self.reference, profile_regions={"TSS": str(regions)})
+
+    def test_qc_rules_appear_only_when_the_flag_is_set(self):
+        output = self.dry_run(
+            "both", "star_umite",
+            reference=self.qc_reference(), generate_QC_plots=True,
+        )
+        for rule in (
+            "cDNA_qc_star_metrics", "cDNA_qc_umicount_metrics", "cDNA_qc_multiqc",
+            "gDNA_qc_conversion_metrics", "gDNA_qc_dupsifter_metrics",
+            "gDNA_qc_flagstat_metrics", "gDNA_qc_plate_heatmap",
+            "gDNA_prepare_methscan_data_GpC", "gDNA_qc_multiqc",
+        ):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, output)
+        for path in (
+            "results/cDNA/qc/tables/fixture.cDNA.per_cell_metrics_mqc.tsv",
+            "results/gDNA/qc/tables/fixture.gDNA.per_cell_metrics_mqc.tsv",
+            "results/gDNA/qc/profiles/TSS_CpG.csv",
+            "results/gDNA/qc/profiles/TSS_GpC.csv",
+            "results/gDNA/qc/profiles/TSS_profiles.pdf",
+            "results/gDNA/qc/cell_stats.png",
+            "results/gDNA/qc/plate/plate_qc.png",
+        ):
+            with self.subTest(path=path):
+                self.assertIn(path, output)
+
+    def test_qc_profiles_read_unfiltered_methscan_data(self):
+        output = self.dry_run(
+            "gDNA", "biscuit_methscan",
+            reference=self.qc_reference(), generate_QC_plots=True,
+        )
+        profile_job = output.split("rule gDNA_qc_methscan_profile:", 1)[1]
+        profile_job = profile_job.split("\n\n", 1)[0]
+        # Filtering would drop exactly the cells these plots exist to reveal.
+        self.assertIn("methscan/compact_data", profile_job)
+        self.assertNotIn("methscan/filtered_data", profile_job)
+        stats_job = output.split("rule gDNA_qc_methscan_cell_stats:", 1)[1]
+        stats_job = stats_job.split("\n\n", 1)[0]
+        self.assertIn("methscan/compact_data/cell_stats.csv", stats_job)
+        self.assertNotIn("methscan/filtered_data", stats_job)
+
+    def test_qc_without_region_files_still_builds(self):
+        output = self.dry_run(
+            "gDNA", "biscuit_methscan", generate_QC_plots=True,
+        )
+        self.assertIn("gDNA_qc_multiqc", output)
+        self.assertNotIn("_profiles.pdf", output)
 
     def test_modern_facility_metadata_builds_gdna_and_both_dags(self):
         metadata = self.root / "data" / "gDNA" / "metadata.tsv"

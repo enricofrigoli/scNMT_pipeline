@@ -6,9 +6,20 @@ reference:
   # star_index/ beside the genome; omit biscuit_index to build it per batch.
   star_index: /absolute/path/to/star_index  # Directory.
   biscuit_index: /absolute/path/to/biscuit/genome  # File prefix, not a directory.
+  # Regions profiled for gDNA QC, used only when generate_QC_plots is true.
+  # Each key names its own outputs and plot title, so add or remove region sets
+  # here without touching the workflow. Use stranded BED files whose chromosome
+  # names match the genome; each chromosome's regions must be grouped together.
+  profile_regions:
+    TSS: /absolute/path/to/TSS.bed
+    CTCF: /absolute/path/to/CTCF_sites.bed
 
 # IDs name data/<batch>/ inputs and results/<batch>/ outputs.
 # Use only letters, digits, and underscores. Each batch requires modality.
+# Write QC reports and plots to results/<batch>/<modality>/qc/. Off by default;
+# it can also be set inside a single batch.
+generate_QC_plots: true
+
 batches:
   batch_01:
     modality: both

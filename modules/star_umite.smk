@@ -105,6 +105,7 @@ rule extract_umi:
     # umiextract parallelises over read pairs, and this rule passes exactly one,
     # so extra cores would be reserved but never used.
     threads: 1
+    log: join(config['outdir'], 'star_alignments/{sample}/{fqid}.umiextract.log')
     conda: '../envs/umite.yaml'
     shell:
         r'''
@@ -113,7 +114,8 @@ rule extract_umi:
             -c {threads} \
             -1 {input.read1} \
             -2 {input.read2} \
-            -d {params.outdir}
+            -d {params.outdir} \
+            -l {log}
         '''
 
 
@@ -123,7 +125,8 @@ rule align_to_ref:
         read2 = lambda wildcards: expand(rules.extract_umi.output.read2_umi, sample=wildcards.sample, fqid=sample_to_fqid[wildcards.sample]),
         indices = ancient(config['star_index_inputs'])
     output:
-        join(config['outdir'], 'star_alignments/{sample}/{sample}_Aligned.out.bam')
+        bam = join(config['outdir'], 'star_alignments/{sample}/{sample}_Aligned.out.bam'),
+        final_log = join(config['outdir'], 'star_alignments/{sample}/{sample}_Log.final.out')
     params:
         read1_comma = lambda wildcards, input: ','.join(input.read1),
         read2_comma = lambda wildcards, input: ','.join(input.read2),
@@ -148,7 +151,7 @@ rule align_to_ref:
 
 rule sort_bam_by_query_name:
     input:
-        rules.align_to_ref.output
+        rules.align_to_ref.output.bam
     output:
         temp(join(config['outdir'], 'alignments/{sample}/{sample}_Aligned.qn_sorted.bam'))
     conda: '../envs/star.yaml'

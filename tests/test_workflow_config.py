@@ -10,7 +10,12 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from workflow_config import normalize_config, prepare_modality_config, read_metadata
+from workflow_config import (
+    normalize_config,
+    prepare_modality_config,
+    qc_targets,
+    read_metadata,
+)
 
 
 FIXTURE_READ_LENGTH = 50
@@ -84,6 +89,101 @@ class WorkflowConfigTests(unittest.TestCase):
         config = copy.deepcopy(self.config)
         config.update(overrides)
         return normalize_config(config, self.root)
+
+    def test_generate_qc_plots_must_be_boolean(self):
+        for value in (None, 1, "true", [], {}):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "generate_QC_plots"):
+                    self.normalized(generate_QC_plots=value)
+
+    def test_generate_qc_plots_defaults_to_false(self):
+        self.assertFalse(self.normalized()["generate_QC_plots"])
+
+    def test_qc_profile_regions_are_resolved_for_selected_gdna(self):
+        self.create_layer("gDNA", [("cell", "id")])
+        regions = self.root / "tss.bed"
+        regions.write_text("chr1\t1\t2\tname\t.\t+\n", encoding="utf-8")
+        config = self.normalized(
+            modality="gDNA",
+            pipeline="biscuit_methscan",
+            generate_QC_plots=True,
+            reference={
+                "genome": str(self.genome),
+                "profile_regions": {"TSS": str(regions)},
+            },
+        )
+        self.assertEqual(
+            config["reference"]["profile_regions"], {"TSS": str(regions)}
+        )
+
+    def test_qc_profile_regions_reject_missing_files_and_bad_names(self):
+        self.create_layer("gDNA", [("cell", "id")])
+        regions = self.root / "tss.bed"
+        regions.write_text("chr1\t1\t2\tname\t.\t+\n", encoding="utf-8")
+        invalid = [
+            ({"TSS": str(self.root / "absent.bed")}, "does not exist"),
+            ({"TSS": "relative.bed"}, "absolute path"),
+            ({"bad name": str(regions)}, "profile_regions name"),
+            ("not-a-mapping", "must be a mapping"),
+        ]
+        for profile_regions, message in invalid:
+            with self.subTest(profile_regions=profile_regions):
+                with self.assertRaisesRegex(ValueError, message):
+                    self.normalized(
+                        modality="gDNA",
+                        pipeline="biscuit_methscan",
+                        generate_QC_plots=True,
+                        reference={
+                            "genome": str(self.genome),
+                            "profile_regions": profile_regions,
+                        },
+                    )
+
+    def test_qc_profile_regions_are_ignored_without_qc_or_gdna(self):
+        self.create_layer("cDNA", [("cell", "id")])
+        broken = {"TSS": str(self.root / "absent.bed")}
+        # cDNA never profiles regions, and QC off profiles nothing at all.
+        for overrides in (
+            {"modality": "cDNA", "generate_QC_plots": True},
+            {"modality": "cDNA", "generate_QC_plots": False},
+        ):
+            with self.subTest(**overrides):
+                config = self.normalized(
+                    reference={
+                        "genome": str(self.genome),
+                        "genes": str(self.genes),
+                        "profile_regions": broken,
+                    },
+                    **overrides,
+                )
+                self.assertEqual(config["reference"]["profile_regions"], broken)
+
+    def test_qc_targets_cover_each_configured_region(self):
+        layer = {
+            "outdir": "/results/batch_01/gDNA",
+            "dataset": "batch_01",
+            "reference": {"profile_regions": {"TSS": "/tss.bed", "CTCF": "/ctcf.bed"}},
+        }
+        targets = qc_targets(layer, "gDNA")
+        self.assertIn("/results/batch_01/gDNA/qc/profiles/TSS_profiles.pdf", targets)
+        self.assertIn("/results/batch_01/gDNA/qc/profiles/CTCF_profiles.pdf", targets)
+        self.assertIn("/results/batch_01/gDNA/qc/cell_stats.png", targets)
+        self.assertIn("/results/batch_01/gDNA/qc/plate/plate_qc.png", targets)
+
+    def test_qc_targets_for_cdna_have_no_gdna_only_plots(self):
+        layer = {
+            "outdir": "/results/batch_01/cDNA",
+            "dataset": "batch_01",
+            "reference": {},
+        }
+        targets = qc_targets(layer, "cDNA")
+        self.assertEqual(
+            targets,
+            [
+                "/results/batch_01/cDNA/qc/multiqc/multiqc_report.html",
+                "/results/batch_01/cDNA/qc/tables/batch_01.cDNA.per_cell_metrics_mqc.tsv",
+            ],
+        )
 
     def test_modern_metadata_mate_rows_resolve_to_one_read_pair(self):
         metadata, fastq = self.create_modern_layer("gDNA", [("cell_A", "facility_001")])

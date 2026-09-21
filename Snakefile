@@ -11,6 +11,7 @@ from workflow_config import (
     normalize_run_config,
     prepare_batch_configs,
     prepare_modality_config,
+    qc_targets,
 )
 
 
@@ -43,9 +44,9 @@ for batch, batch_config in batch_configs.items():
         use rule * from module_name as module_name*
 
         all_outputs.append(str(Path(layer["outdir"]) / f"{layer['dataset']}.{layer['pipeline']}.h5ad"))
-        if modality == "gDNA":
-            all_outputs.append(str(Path(layer["outdir"]) / "qc_plots/cell_stats.png"))
-        else:
+        if layer["generate_QC_plots"]:
+            all_outputs.extend(qc_targets(layer, modality))
+        if modality == "cDNA":
             index_dir = str(Path(layer["star_index_dir"]).resolve())
             index_key = hashlib.sha256(index_dir.encode()).hexdigest()[:16]
             group = star_cleanup_groups.setdefault(index_key, {
