@@ -11,7 +11,7 @@ pipeline: star_umite
 # Opt-in QC. When true, each batch also produces reports and plots under
 # results/<batch>/<modality>/qc/. Can be overridden inside a single batch.
 # gDNA QC profiles the regions listed in reference.profile_regions; see below.
-generate_QC_plots: false
+generate_QC_plots: true
 
 # Input/output roots default to data/ and results/ beside Snakefile.
 # Optional datadir and outdir overrides in snakeconfig.yaml must be absolute.

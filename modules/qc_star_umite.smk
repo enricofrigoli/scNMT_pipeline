@@ -13,6 +13,10 @@ rule qc_star_metrics:
         script = workflow.source_path('../scripts/summarize_star_logs.py')
     output:
         join(qc_dir, 'tables/star_metrics.tsv')
+    threads: 1
+    resources:
+        mem_mb=4000,
+        walltime=60
     conda: '../envs/plotting.yaml'
     shell:
         'python3 {input.script:q} {input.logs:q} -o {output:q}'
@@ -28,6 +32,10 @@ rule qc_umicount_metrics:
         join(qc_dir, 'tables/umicount_metrics.tsv')
     params:
         umicount_log = join(config['outdir'], 'umicount/umicount.log')
+    threads: 1
+    resources:
+        mem_mb=4000,
+        walltime=60
     conda: '../envs/plotting.yaml'
     shell:
         'python3 {input.script:q} {params.umicount_log:q} -o {output:q}'
@@ -45,6 +53,10 @@ rule qc_per_cell_metrics:
     params:
         section_id = 'cdna_per_cell_metrics',
         section_name = 'cDNA per-cell metrics'
+    threads: 1
+    resources:
+        mem_mb=4000,
+        walltime=60
     conda: '../envs/plotting.yaml'
     shell:
         r'''
@@ -69,6 +81,11 @@ rule qc_multiqc:
         outdir = join(qc_dir, 'multiqc'),
         title = f'{config["dataset"]} cDNA'
     log: join(qc_dir, 'multiqc/multiqc.log')
+    # Parses one STAR log per cell of the batch.
+    threads: 1
+    resources:
+        mem_mb=8000,
+        walltime=120
     conda: '../envs/multiqc.yaml'
     shell:
         r'''

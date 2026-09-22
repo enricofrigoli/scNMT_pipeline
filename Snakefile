@@ -97,7 +97,12 @@ if star_index_builds:
             "{index_dir}/star_genome_generate.log"
         wildcard_constraints:
             index_dir = "|".join(re.escape(index_dir) for index_dir in star_index_builds)
-        threads: workflow.cores
+        # Raise mem_mb together with star_index_args --limitGenomeGenerateRAM
+        # when indexing a genome larger than human.
+        threads: 16
+        resources:
+            mem_mb=64000,
+            walltime=480
         conda: "envs/star.yaml"
         shell:
             r'''
@@ -130,6 +135,10 @@ if star_cleanup_groups:
             str(Path(config["outdir"]) / "reference/star_cleanup/{index_key}.log")
         wildcard_constraints:
             index_key = r"[0-9a-f]{16}"
+        threads: 1
+        resources:
+            mem_mb=2000,
+            walltime=60
         conda: "envs/star.yaml"
         shell:
             r'''
@@ -151,6 +160,10 @@ if star_cleanup_groups:
         str(Path(config["outdir"]) / f"reference/star_cleanup/{index_key}.flag")
         for index_key in star_cleanup_groups
     )
+
+
+# Writing one config file is not worth a cluster job, so it needs no resources.
+localrules: all
 
 
 rule all:

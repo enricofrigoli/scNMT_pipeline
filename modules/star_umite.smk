@@ -3,6 +3,11 @@ rule fix_gtf_exon_ids:
         gtf = ancient(config['reference']['genes'])
     output:
         gtf = join(config['outdir'], 'reference/genes_with_exon_id.gtf')
+    # The annotation is read and rewritten entirely in memory.
+    threads: 1
+    resources:
+        mem_mb=16000,
+        walltime=60
     run:
         import os
 
@@ -105,6 +110,9 @@ rule extract_umi:
     # umiextract parallelises over read pairs, and this rule passes exactly one,
     # so extra cores would be reserved but never used.
     threads: 1
+    resources:
+        mem_mb=8000,
+        walltime=240
     log: join(config['outdir'], 'star_alignments/{sample}/{fqid}.umiextract.log')
     conda: '../envs/umite.yaml'
     shell:
@@ -134,7 +142,12 @@ rule align_to_ref:
         star_args = config['star_align_args'],
         index_dir = config['star_index_dir']
     log: join(config['outdir'], 'star_alignments/{sample}/STAR_alignment.log')
-    threads: min(4, workflow.cores)
+    # --genomeLoad LoadAndKeep shares one index per host, but LSF accounts the
+    # mapped segment to every job, so each request covers a whole loaded genome.
+    threads: 4
+    resources:
+        mem_mb=40000,
+        walltime=240
     conda: '../envs/star.yaml'
     shell:
         r'''
@@ -154,6 +167,10 @@ rule sort_bam_by_query_name:
         rules.align_to_ref.output.bam
     output:
         temp(join(config['outdir'], 'alignments/{sample}/{sample}_Aligned.qn_sorted.bam'))
+    threads: 1
+    resources:
+        mem_mb=8000,
+        walltime=120
     conda: '../envs/star.yaml'
     shell:
         'samtools cat {input} | samtools sort -n -o {output}' # umicount requires the BAM file to be sorted by query name (instead of genomic location)
@@ -172,6 +189,10 @@ rule parse_dump_GTF:
         join(config['outdir'], f'reference/umicount_GTF_dump.{stranded}.pkl')
     params:
         stranded = stranded
+    threads: 1
+    resources:
+        mem_mb=16000,
+        walltime=120
     conda: '../envs/umite.yaml'
     shell:
         'umicount -g {input} --GTF_dump {output} --stranded {params.stranded}'
@@ -187,7 +208,11 @@ rule count_umis:
         outdir = join(config['outdir'], 'umicount'),
         umicount_args = config['umicount_args']
     log: join(config['outdir'], 'umicount/umicount.log')
-    threads: min(4, workflow.cores)
+    # One job counts every cell of the batch, holding the parsed GTF throughout.
+    threads: 8
+    resources:
+        mem_mb=32000,
+        walltime=1440
     conda: '../envs/umite.yaml'
     shell:
         r'''
@@ -223,6 +248,10 @@ rule build_trsc_anndata:
     params:
         filename_prefix = config['dataset'],
         samplename_suffix = '_Aligned.qn_sorted.bam'
+    threads: 1
+    resources:
+        mem_mb=16000,
+        walltime=120
     conda: '../envs/anndata.yaml'
     shell:
         r'''

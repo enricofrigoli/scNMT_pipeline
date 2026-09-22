@@ -18,6 +18,10 @@ rule qc_flagstat:
         bai = rules.index_bam.output
     output:
         temp(join(config['outdir'], 'biscuit/{sample}/{sample}.flagstat'))
+    threads: 1
+    resources:
+        mem_mb=2000,
+        walltime=60
     conda: '../envs/biscuit.yaml'
     shell:
         'samtools flagstat {input.bam:q} > {output:q}'
@@ -29,6 +33,10 @@ rule qc_flagstat_metrics:
         script = workflow.source_path('../scripts/summarize_flagstat.py')
     output:
         join(qc_dir, 'tables/flagstat_metrics.tsv')
+    threads: 1
+    resources:
+        mem_mb=4000,
+        walltime=60
     conda: '../envs/plotting.yaml'
     shell:
         'python3 {input.script:q} {input.reports:q} -o {output:q}'
@@ -42,6 +50,10 @@ rule qc_dupsifter_metrics:
         script = workflow.source_path('../scripts/summarize_dupsifter.py')
     output:
         join(qc_dir, 'tables/dupsifter_metrics.tsv')
+    threads: 1
+    resources:
+        mem_mb=4000,
+        walltime=60
     conda: '../envs/plotting.yaml'
     shell:
         'python3 {input.script:q} {input.stats:q} -o {output:q}'
@@ -57,6 +69,10 @@ rule qc_conversion_metrics:
         script = workflow.source_path('../scripts/summarize_hch_conversion.py')
     output:
         join(qc_dir, 'tables/conversion_metrics.tsv')
+    threads: 1
+    resources:
+        mem_mb=4000,
+        walltime=60
     conda: '../envs/plotting.yaml'
     shell:
         'python3 {input.script:q} {input.averages:q} -o {output:q}'
@@ -75,6 +91,10 @@ rule qc_per_cell_metrics:
     params:
         section_id = 'gdna_per_cell_metrics',
         section_name = 'gDNA per-cell metrics'
+    threads: 1
+    resources:
+        mem_mb=4000,
+        walltime=60
     conda: '../envs/plotting.yaml'
     shell:
         r'''
@@ -95,6 +115,10 @@ rule qc_plate_heatmap:
         join(qc_dir, 'plate/plate_qc.png')
     params:
         title = f'{config["dataset"]} gDNA plate QC'
+    threads: 1
+    resources:
+        mem_mb=4000,
+        walltime=60
     conda: '../envs/plotting.yaml'
     shell:
         r'''
@@ -113,6 +137,10 @@ rule qc_methscan_cell_stats:
         script = workflow.source_path('../scripts/plot_methscan_cell_stats.py')
     output:
         join(qc_dir, 'cell_stats.png')
+    threads: 1
+    resources:
+        mem_mb=4000,
+        walltime=60
     conda: '../envs/plotting.yaml'
     shell:
         'python3 {input.script:q} {input.data_dir:q}/cell_stats.csv -o {output:q}'
@@ -132,6 +160,11 @@ rule prepare_methscan_data_GpC:
     params:
         methscan_args = config['methscan_prepare_args']
     log: join(config['outdir'], 'methscan/methscan_prepare_GpC.log')
+    # As costly as the CpG preparation: one job over every cell's GCH bed.
+    threads: 1
+    resources:
+        mem_mb=32000,
+        walltime=720
     conda: '../envs/methscan.yaml'
     run:
         shell('methscan prepare {params.methscan_args} {input} {output} 2> {log}')
@@ -154,6 +187,10 @@ rule qc_methscan_profile:
     params:
         methscan_args = config['methscan_profile_args']
     log: join(qc_dir, 'profiles/{region}_{mark}.methscan_profile.log')
+    threads: 1
+    resources:
+        mem_mb=16000,
+        walltime=240
     conda: '../envs/methscan.yaml'
     shell:
         'methscan profile {params.methscan_args} {input.regions:q} {input.data_dir:q} {output:q} 2> {log:q}'
@@ -166,6 +203,10 @@ rule qc_plot_region_profiles:
         script = workflow.source_path('../scripts/plot_region_profiles.py')
     output:
         join(qc_dir, 'profiles/{region}_profiles.pdf')
+    threads: 1
+    resources:
+        mem_mb=4000,
+        walltime=60
     conda: '../envs/plotting.yaml'
     shell:
         r'''
@@ -196,6 +237,11 @@ rule qc_multiqc:
         outdir = join(qc_dir, 'multiqc'),
         title = f'{config["dataset"]} gDNA'
     log: join(qc_dir, 'multiqc/multiqc.log')
+    # Parses two trimming reports per cell of the batch.
+    threads: 1
+    resources:
+        mem_mb=8000,
+        walltime=120
     conda: '../envs/multiqc.yaml'
     shell:
         r'''

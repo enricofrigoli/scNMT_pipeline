@@ -13,6 +13,10 @@ rule prepare_biscuit_reference:
     output:
         genome = join(config['outdir'], 'reference/genome.fa'),
         fai = join(config['outdir'], 'reference/genome.fa.fai')
+    threads: 1
+    resources:
+        mem_mb=4000,
+        walltime=60
     conda: '../envs/biscuit.yaml'
     shell:
         '''
@@ -31,6 +35,12 @@ if not config['reference'].get('biscuit_index'):
             prefix = config['biscuit_index_prefix'],
             alg = config['biscuit_index_alg']
         log: join(config['outdir'], 'reference/biscuit_index.log')
+        # biscuit index is single-threaded and builds the parent and daughter
+        # indexes one after the other, so a whole genome takes hours.
+        threads: 1
+        resources:
+            mem_mb=32000,
+            walltime=1440
         conda: '../envs/biscuit.yaml'
         shell:
             '''
@@ -68,6 +78,10 @@ rule merge_trimmed_reads:
     output:
         read1 = temp(join(config['outdir'], 'biscuit/{sample}/merged_R1.fq.gz')),
         read2 = temp(join(config['outdir'], 'biscuit/{sample}/merged_R2.fq.gz'))
+    threads: 1
+    resources:
+        mem_mb=2000,
+        walltime=60
     shell:
         '''
         cat {input.read1:q} > {output.read1:q}
@@ -86,7 +100,11 @@ rule align_to_ref:
         base = config['biscuit_index_prefix'],
         biscuit_args = config['biscuit_align_args']
     log: join(config['outdir'], 'biscuit/{sample}/{sample}.biscuit_align.log')
-    threads: min(4, workflow.cores) 
+    # The two bisulfite indexes of a mammalian genome occupy roughly 11 GB.
+    threads: 8
+    resources:
+        mem_mb=16000,
+        walltime=240
     conda: '../envs/biscuit.yaml'
     shell:
         'biscuit align -@ {threads} {params.base:q} {params.biscuit_args} {input.read1:q} {input.read2:q} 2> {log:q} | samtools view -b -o {output:q}'
@@ -101,6 +119,12 @@ rule deduplicate_and_sort_bam:
         bam = join(config['outdir'], 'biscuit/{sample}/{sample}.dedup_sorted.bam'),
         stats = join(config['outdir'], 'biscuit/{sample}/{sample}.dupsifter.stat')
     log: join(config['outdir'], 'biscuit/{sample}/{sample}.dupsifter.log')
+    # dupsifter keeps the reference in memory; samtools sort is not given -@,
+    # so it stays on one thread with its default 768 MB buffer.
+    threads: 1
+    resources:
+        mem_mb=8000,
+        walltime=120
     conda: '../envs/biscuit.yaml'
     shell:
         'dupsifter {input.ref_genome} {input.bam} -O {output.stats} 2> {log} | samtools sort -o {output.bam}'
@@ -122,6 +146,10 @@ rule index_bam:
         join(config['outdir'], 'biscuit/{sample}/{sample}.dedup_sorted.bam')
     output:
         join(config['outdir'], 'biscuit/{sample}/{sample}.dedup_sorted.bam.bai')
+    threads: 1
+    resources:
+        mem_mb=2000,
+        walltime=60
     conda: '../envs/biscuit.yaml'
     shell:
         'samtools index {input}'
@@ -140,7 +168,10 @@ rule extract_variants:
         biscuit_args = config['biscuit_pileup_args'],
         stats_prefix = join(config['outdir'], 'biscuit/{sample}/{sample}')
     log: join(config['outdir'], 'biscuit/{sample}/{sample}.biscuit_pileup.log')
-    threads: min(4, workflow.cores)
+    threads: 4
+    resources:
+        mem_mb=12000,
+        walltime=240
     conda: '../envs/biscuit.yaml'
     shell:
         'biscuit pileup -@ {threads} -N -w {params.stats_prefix:q} {params.biscuit_args} {input.ref_genome} {input.bam} 2> {log} | bgzip -@ {threads} -o {output.vcf}'
@@ -153,6 +184,10 @@ rule extract_methylation:
         hcg = join(config['outdir'], 'biscuit/{sample}/{sample}_HCG.bed'),
         gch = join(config['outdir'], 'biscuit/{sample}/{sample}_GCH.bed')
     log: join(config['outdir'], 'biscuit/{sample}/{sample}.biscuit_vcf2bed.log')
+    threads: 1
+    resources:
+        mem_mb=4000,
+        walltime=60
     conda: '../envs/biscuit.yaml'
     shell:
         '''
@@ -169,6 +204,11 @@ rule prepare_methscan_data_and_rename_columns:
     params:
         methscan_args = config['methscan_prepare_args']
     log: join(config['outdir'], 'methscan/methscan_prepare.log')
+    # One job reads every cell's HCG bed, so its cost scales with the batch.
+    threads: 1
+    resources:
+        mem_mb=32000,
+        walltime=720
     conda: '../envs/methscan.yaml'
     run:
         shell('methscan prepare {params.methscan_args} {input} {output} 2> {log}')
@@ -188,6 +228,10 @@ rule filter_methscan_data:
     params:
         methscan_args = config['methscan_filter_args']
     log: join(config['outdir'], 'methscan/methscan_filter.log')
+    threads: 1
+    resources:
+        mem_mb=32000,
+        walltime=240
     conda: '../envs/methscan.yaml'
     shell:
         'methscan filter {params.methscan_args} {input.data_dir} {output} 2> {log}'
@@ -203,7 +247,11 @@ rule find_methscan_VMRs:
         scan_args = config['methscan_scan_args']
     log: join(config['outdir'], 'methscan/methscan_scan.log')
     conda: '../envs/methscan.yaml'
-    threads: workflow.cores
+    # Only methscan scan takes --threads here; smooth runs before it on one core.
+    threads: 8
+    resources:
+        mem_mb=32000,
+        walltime=720
     shell:
         '''
         methscan smooth {params.smooth_args} {input} 2>> {log}
@@ -221,7 +269,10 @@ rule construct_methscan_matrix:
         methscan_args = config['methscan_matrix_args']
     log: join(config['outdir'], 'methscan/methscan_matrix.log')
     conda: '../envs/methscan.yaml'
-    threads: workflow.cores
+    threads: 8
+    resources:
+        mem_mb=32000,
+        walltime=240
     shell:
         'methscan matrix {params.methscan_args} --threads {threads} {input.vmrs} {input.data_dir} {output} 2> {log}'
 
@@ -231,6 +282,10 @@ rule build_meth_anndata:
         rules.construct_methscan_matrix.output
     output:
         join(config['outdir'], f'{config["dataset"]}.biscuit_methscan.h5ad')
+    threads: 1
+    resources:
+        mem_mb=16000,
+        walltime=120
     conda: '../envs/anndata.yaml'
     shell:
         'python3 scripts/summarize_methscan_matrix.py {input}/mean_shrunken_residuals.csv.gz -o {output}'
