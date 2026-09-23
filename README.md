@@ -210,6 +210,10 @@ Preview the migration with `snakemake -n --cores 4 --sdm conda`. Changing `envs/
 
 ## BISCUIT configuration
 
+BISCUIT is pinned to `1.10.2.20260818` in `envs/biscuit.yaml`. This release
+includes the fix for malformed NOMe methylation statistics emitted by 1.7.1.
+Run with `--sdm conda` to use the pinned environment.
+
 `biscuit_pileup_args` defaults to `-p`, which keeps reads flagged as an improper pair. BISCUIT discards them by default, and post-bisulfite libraries produce many of them. NOMe-seq mode (`-N`) is always added by the workflow because HCG/GCH extraction depends on it, so leave it out of this string.
 
 ## Methscan configuration
@@ -291,11 +295,20 @@ per-cell table.
 | `samtools flagstat` | primary, secondary, supplementary and mapped reads |
 | `trim_galore` | per-mate trimming reports, read into MultiQC |
 
-Conversion is measured on **HCH**, the only cytosine class that is neither CpG
+Conversion is estimated from **HCH**, the only cytosine class that is neither CpG
 nor GpC. In NOMe-seq the GpC methyltransferase methylates GpC, so the usual
 CpH-based conversion estimate is inflated by the accessibility signal itself.
-BISCUIT reports HCH per chromosome when `pileup` runs in NOMe-seq mode, so this
-costs nothing beyond one extra flag.
+BISCUIT reports HCH when `pileup` runs in NOMe-seq mode. QC uses its
+`WholeGenome` summary when present, otherwise a site-count-weighted average
+of chromosome rows. The summary is never added to the chromosome counts.
+Percentages such as `2.000%` give HCH methylation of 2% and a conversion proxy
+of 98%; zero HCH coverage produces a missing conversion value. Endogenous
+HCH methylation can also contribute to this proxy, particularly in neurons.
+
+QC rejects malformed rows and invalid numeric values instead of silently
+reporting zero methylation. Existing malformed statistics must be regenerated
+with the pinned BISCUIT version from the deduplicated BAMs, then QC rerun;
+upgrading the environment alone does not repair old files.
 
 Conversion rate, duplicate percentage and mapping rate are also drawn on the
 384-well plate layout, where failures that follow plate position rather than
